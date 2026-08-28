@@ -280,6 +280,8 @@ jobs:
             viewer-smoke.json
             derk-viewer-1280.png
             derk-viewer-360.png
+            derk-viewer-worst-notes-1280.png
+            derk-viewer-worst-notes-360.png
             derk-viewer-checks.json
           if-no-files-found: warn
           retention-days: 14

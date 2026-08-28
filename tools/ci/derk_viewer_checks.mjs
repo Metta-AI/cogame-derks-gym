@@ -396,58 +396,70 @@ async function main() {
     // canvas_text total 0 because the renderer is WebGL/raylib and every
     // readout is DOM), so the checklist's worst-case renderer fixture is a
     // DOM fixture here: the same bundle, the same real replay, with all six
-    // notes replaced by the 120-rune cap. Scrolling is fine (the overlay is
-    // overflow:auto by design); clipping and a covered transport are not,
-    // and a note that arrived shortened would mean the fixture tested
-    // nothing.
-    page = await browser.newPage({ viewport: { width: 360, height: 640 } });
-    page.on("pageerror", (e) => console_lines.push(`pageerror(worst): ${e.message}`));
-    await page.goto(urlFor(worstPath), { waitUntil: "domcontentloaded" });
-    await waitLoaded(page, args.timeout * 1000);
-    await page.evaluate(() => {
-      const play = document.getElementById("playpause");
-      if (play && play.textContent === "pause") play.click();
-      const open = document.getElementById("derk-draft-open");
-      if (open) open.click();
-    });
-    await page.waitForTimeout(500);
-    const worst = await page.evaluate((cap) => {
-      const overlay = document.getElementById("derk-draft");
-      const controls = document.getElementById("controls").getBoundingClientRect();
-      const box = overlay.getBoundingClientRect();
-      const notes = [...overlay.querySelectorAll(".derk-card .derk-note")];
-      return {
-        hidden: overlay.hidden,
-        notes: notes.length,
-        fullLength: notes.filter((n) => n.textContent.length === cap).length,
-        clipped: notes.filter((n) => {
-          const nb = n.getBoundingClientRect();
-          const cb = n.parentElement.getBoundingClientRect();
-          return nb.height < 1 || nb.right > cb.right + 1 || nb.left < cb.left - 1;
-        }).length,
-        overflowX: overlay.scrollWidth - overlay.clientWidth,
-        scrollable: overlay.scrollHeight > overlay.clientHeight,
-        bottom: box.bottom,
-        controlsTop: controls.top,
-      };
-    }, WORST_NOTE.length);
-    summary.worst_case_notes = worst;
-    check(!worst.hidden && worst.notes === 6,
-      `worst case: 6 full-cap notes rendered in #derk-draft (got ${worst.notes})`);
-    check(worst.fullLength === worst.notes,
-      `worst case: every note is still ${WORST_NOTE.length} runes long ` +
-      `(${worst.fullLength}/${worst.notes})`);
-    check(worst.clipped === 0,
-      `worst case: no note is clipped by its card (${worst.clipped} clipped)`);
-    check(worst.overflowX <= 1,
-      `worst case: #derk-draft does not overflow sideways ` +
-      `(scrollWidth - clientWidth = ${worst.overflowX}px; vertical scroll ` +
-      `is fine: scrollable=${worst.scrollable})`);
-    check(worst.bottom <= worst.controlsTop + 1,
-      `worst case: #derk-draft still stops above the transport band ` +
-      `(${worst.bottom} <= ${worst.controlsTop})`);
-    await page.screenshot({
-      path: join(args.outDir, "derk-viewer-worst-notes-360.png") });
+    // notes replaced by the 120-rune cap. Checked at BOTH canvas sizes the
+    // plain replay is checked at, because the failure modes differ: the
+    // wide one is where a full-cap note has room to push its card sideways,
+    // the narrow one is where it has room to overflow its card downward.
+    // Scrolling is fine (the overlay is overflow:auto by design); clipping
+    // and a covered transport are not, and a note that arrived shortened
+    // would mean the fixture tested nothing.
+    summary.worst_case_notes = {};
+    for (const viewport of [{ width: 1280, height: 800 },
+                            { width: 360, height: 640 }]) {
+      const size = `${viewport.width}x${viewport.height}`;
+      page = await browser.newPage({ viewport });
+      page.on("pageerror",
+        (e) => console_lines.push(`pageerror(worst ${size}): ${e.message}`));
+      await page.goto(urlFor(worstPath), { waitUntil: "domcontentloaded" });
+      await waitLoaded(page, args.timeout * 1000);
+      await page.evaluate(() => {
+        const play = document.getElementById("playpause");
+        if (play && play.textContent === "pause") play.click();
+        const open = document.getElementById("derk-draft-open");
+        if (open) open.click();
+      });
+      await page.waitForTimeout(500);
+      const worst = await page.evaluate((cap) => {
+        const overlay = document.getElementById("derk-draft");
+        const controls = document.getElementById("controls").getBoundingClientRect();
+        const box = overlay.getBoundingClientRect();
+        const notes = [...overlay.querySelectorAll(".derk-card .derk-note")];
+        return {
+          hidden: overlay.hidden,
+          notes: notes.length,
+          fullLength: notes.filter((n) => n.textContent.length === cap).length,
+          clipped: notes.filter((n) => {
+            const nb = n.getBoundingClientRect();
+            const cb = n.parentElement.getBoundingClientRect();
+            return nb.height < 1 || nb.right > cb.right + 1 || nb.left < cb.left - 1;
+          }).length,
+          overflowX: overlay.scrollWidth - overlay.clientWidth,
+          scrollable: overlay.scrollHeight > overlay.clientHeight,
+          bottom: box.bottom,
+          controlsTop: controls.top,
+        };
+      }, WORST_NOTE.length);
+      summary.worst_case_notes[size] = worst;
+      check(!worst.hidden && worst.notes === 6,
+        `worst case ${size}: 6 full-cap notes rendered in #derk-draft ` +
+        `(got ${worst.notes})`);
+      check(worst.fullLength === worst.notes,
+        `worst case ${size}: every note is still ${WORST_NOTE.length} runes ` +
+        `long (${worst.fullLength}/${worst.notes})`);
+      check(worst.clipped === 0,
+        `worst case ${size}: no note is clipped by its card ` +
+        `(${worst.clipped} clipped)`);
+      check(worst.overflowX <= 1,
+        `worst case ${size}: #derk-draft does not overflow sideways ` +
+        `(scrollWidth - clientWidth = ${worst.overflowX}px; vertical scroll ` +
+        `is fine: scrollable=${worst.scrollable})`);
+      check(worst.bottom <= worst.controlsTop + 1,
+        `worst case ${size}: #derk-draft still stops above the transport ` +
+        `band (${worst.bottom} <= ${worst.controlsTop})`);
+      await page.screenshot({
+        path: join(args.outDir, `derk-viewer-worst-notes-${viewport.width}.png`) });
+      await page.close();
+    }
 
     summary.console_tail = console_lines.slice(-30);
   } finally {
