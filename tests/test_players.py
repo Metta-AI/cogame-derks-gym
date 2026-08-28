@@ -379,6 +379,64 @@ def test_bad_seed_env_is_fatal(monkeypatch):
     assert client.seed_from_env(default=7) == 7
 
 
+async def test_a_slow_draft_keeps_answering_the_ws_heartbeat():
+    """A draft decision slower than the server's ping interval must not
+    stall the read loop.
+
+    aiohttp answers a peer PING only from inside ``receive()``, so a draft
+    awaited inline in ``async for msg in ws`` stops the client from
+    ponging: the server closes the socket at ping + ping/2 and the drafted
+    reply is lost (the seat degrades to ``disconnected`` + the neutral
+    loadout). Production numbers are a 20 s heartbeat
+    (``server.PLAYER_WS_HEARTBEAT_SECONDS``) against an LLM draft path
+    bounded at 2 x 20 s; this is the same shape at 0.4 s / 1.2 s.
+    """
+    heartbeat, block = 0.4, 1.2      # block > heartbeat * 1.5
+    picks = {"arm": "arm_cleaver", "tail": "tail_plate", "misc": "misc_regen"}
+    seen = {"draft": None, "ticks": [], "non_text": None}
+
+    async def handler(request):
+        ws = web.WebSocketResponse(heartbeat=heartbeat)
+        await ws.prepare(request)
+        await ws.send_str(json.dumps({"phase": "draft", "seat": 0}))
+        async for msg in ws:
+            if msg.type != WSMsgType.TEXT:
+                seen["non_text"] = str(msg.type)
+                break
+            data = json.loads(msg.data)
+            if data.get("phase") == "draft":
+                seen["draft"] = data
+                await ws.send_str(_obs_msg(0))   # the socket survived: play on
+                continue
+            seen["ticks"].append(data)
+            break
+        await ws.send_str(json.dumps(
+            {"done": True, "result": {"scores": [1.0]}}))
+        await ws.close()
+        return ws
+
+    class SlowDraftPolicy(random_player.RandomPolicy):
+        async def on_draft(self, observation):
+            await asyncio.sleep(block)
+            return picks
+
+    app = web.Application()
+    app.router.add_get("/player", handler)
+    server = TestServer(app)
+    await server.start_server()
+    try:
+        result = await play_episode(
+            SlowDraftPolicy(seed=0), str(server.make_url("/player")),
+            max_connect_attempts=1)   # no reconnect can paper this over
+    finally:
+        await server.close()
+
+    assert seen["draft"] == {"phase": "draft", "picks": [picks]}
+    assert seen["non_text"] is None      # the socket was never closed on us
+    assert len(seen["ticks"]) == 1       # and it still played a tick after
+    assert result == {"scores": [1.0]}
+
+
 def test_ws_url_env_precedence(monkeypatch):
     monkeypatch.delenv("COWORLD_PLAYER_WS_URL", raising=False)
     monkeypatch.delenv("COGAMES_ENGINE_WS_URL", raising=False)

@@ -187,6 +187,7 @@ async def _play_connection(
     Returns ``(result, ticks_answered)``; result is None on disconnect.
     """
     answered = 0
+    draft_task: asyncio.Task | None = None
     try:
         async for msg in ws:
             if msg.type != WSMsgType.TEXT:
@@ -201,9 +202,18 @@ async def _play_connection(
                 return data.get("result", {}), answered
             phase = data.get("phase")
             if phase is not None:
-                if phase == "draft":
-                    await _answer_draft(ws, policy, data)
-                # "draft_result" and any unrecognised phase: ignored.
+                if phase == "draft" and draft_task is None:
+                    # In its own task, NOT awaited here: aiohttp answers a
+                    # server PING only from inside receive(), so a draft
+                    # decision awaited inline (an LLM call: up to 2 x 20 s)
+                    # would stop this client ponging and the server's 20 s
+                    # heartbeat would close the socket under it. The task
+                    # sends the reply when the decision resolves; the
+                    # server's draft deadline stays authoritative.
+                    draft_task = asyncio.create_task(
+                        _answer_draft(ws, policy, data))
+                # a second "draft", "draft_result" and any unrecognised
+                # phase: ignored.
                 continue
             if "tick" not in data or "obs" not in data:
                 continue
@@ -228,16 +238,30 @@ async def _play_connection(
             answered += 1
     except (aiohttp.ClientError, ConnectionError):
         pass  # dropped mid-episode: caller decides whether to reconnect
+    finally:
+        if draft_task is not None and not draft_task.done():
+            # the connection is over: a decision still in flight has
+            # nowhere to send its reply
+            draft_task.cancel()
+            try:
+                await draft_task
+            except (Exception, asyncio.CancelledError):
+                pass
     return None, answered
 
 
 async def _answer_draft(ws, policy, observation: dict) -> None:
     """Answer the one draft turn, if this policy drafts at all.
 
+    Runs as its own task (see ``_play_connection``) so the read loop keeps
+    servicing the socket — ping/pong included — while a slow decision
+    runs.
+
     Degrade, never hang: a policy that has no ``on_draft``, returns None,
     or raises simply does not answer — the server's shared draft deadline
     then gives this seat the neutral loadout and the match starts on
-    time. A draft failure must never end the episode.
+    time. A draft failure must never end the episode, so a failed send
+    (the socket went away while we were deciding) is logged, not raised.
     """
     on_draft = getattr(policy, "on_draft", None)
     if on_draft is None:
@@ -246,6 +270,8 @@ async def _answer_draft(ws, policy, observation: dict) -> None:
         picks = on_draft(observation)
         if inspect.isawaitable(picks):
             picks = await picks
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:
         print(f"player: draft decision failed ({type(exc).__name__}: "
               f"{exc}); not answering the draft turn (the server plays "
@@ -253,7 +279,12 @@ async def _answer_draft(ws, policy, observation: dict) -> None:
         return
     if picks is None:
         return
-    await ws.send_str(json.dumps({"phase": "draft", "picks": [picks]}))
+    try:
+        await ws.send_str(json.dumps({"phase": "draft", "picks": [picks]}))
+    except (aiohttp.ClientError, ConnectionError, RuntimeError) as exc:
+        print(f"player: could not send the draft reply "
+              f"({type(exc).__name__}: {exc}); the server plays the "
+              f"neutral loadout for this seat", file=sys.stderr)
 
 
 def run_policy_main(policy_factory: Callable[[], Policy]) -> int:
