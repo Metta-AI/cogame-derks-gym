@@ -1,0 +1,386 @@
+# CI for Metta-AI/cogame-derks-gym.
+#
+# From coworld-builder templates/ci.yml, with one deliberate departure: the
+# `test` job is this repo's own toolchain (emscripten + uv + pytest), not the
+# template's Nim recipe -- cogame-derks-gym is the C/wasm + Python moba lineage.
+# The docker-smoke and wasm-viewer jobs are the template's, verbatim except for
+# the substituted names, and upload-coworld is inherited from the starter.
+#
+# Substituted: derks-gym (slug), cogame-derks-gym-player (compose player image
+# minus ":latest" -- the tag `coworld build` produces and `upload-policy` cuts
+# policies from), 6 (seat count; docker_smoke.sh cross-checks it against
+# certification.game_config.num_agents and hard-fails on a disagreement).
+#
+# The coworld-builder sandbox has no docker, no emsdk and no browser: this
+# workflow is the ONLY place those toolchains run. Phase 20's exit criterion is
+# this workflow green on main.
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Explicit game version for the Coworld upload (default: patch-bump the highest existing derks-gym row)"
+        required: false
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  SLUG: derks-gym
+  IMAGE: cogame-derks-gym-player
+  # emcc pin: vendor/UPSTREAM.md, the Dockerfile wasm-builder stage and this
+  # workflow must agree (AGENTS.md).
+  EMSDK_VERSION: "6.0.5"
+  COWORLD_PKG: "coworld[auth]==0.1.43"
+
+jobs:
+  # ---------------------------------------------------------------------
+  # The sim/server/player/viewer test suite, with the wasm artifacts built
+  # first from the vendored source. COGAME_REQUIRE_WASM_BUILD turns the
+  # local-convenience "wasm not built" skips into failures: in CI the
+  # artifacts were just built, so a skip would mean a gate silently stopped
+  # gating -- and tests/test_fidelity.py IS the acceptance gate for this repo.
+  # ---------------------------------------------------------------------
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+      - uses: mymindstorm/setup-emsdk@6ab9eb1bda2574c4ddb79809fc9247783eaf9021 # v14
+        with:
+          version: 6.0.5
+          actions-cache-folder: emsdk-cache
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install xxd
+        run: command -v xxd >/dev/null || (sudo apt-get update && sudo apt-get install -y xxd)
+      # sim/build_viewer.sh caches the sha-pinned raylib web zip here; key on
+      # the pin so a bump invalidates the cache.
+      - name: Cache raylib web build
+        uses: actions/cache@v4
+        with:
+          path: build/raylib-web
+          key: raylib-web-${{ hashFiles('sim/build_viewer.sh') }}
+      - name: Build wasm artifacts
+        run: |
+          bash sim/apply_patches.sh
+          bash sim/build_sim.sh
+          bash sim/build_brain.sh
+          bash sim/build_viewer.sh
+      - name: Sync Python deps
+        run: uv sync --frozen
+      - name: Run tests
+        env:
+          COGAME_REQUIRE_WASM_BUILD: "1"
+        run: uv run pytest -v
+
+  docker-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+
+      # Invoked by path, not through `bash`: a `bash SCRIPT` call ignores the exec
+      # bit, so a 0644 helper would go green here and only fail wherever it is
+      # executed directly.
+      - name: Assert the smoke script is present and executable
+        run: |
+          set -euo pipefail
+          test -f tools/ci/docker_smoke.sh || {
+            echo "::error::tools/ci/docker_smoke.sh is missing"; exit 1; }
+          test -x tools/ci/docker_smoke.sh || {
+            echo "::error::tools/ci/docker_smoke.sh must be committed executable (mode 100755)."
+            echo "::error::Fix with: git update-index --chmod=+x tools/ci/docker_smoke.sh"
+            exit 1; }
+
+      - name: Build image
+        run: docker build --platform=linux/amd64 -t "${IMAGE}:ci" .
+
+      - name: Raw-Docker episode smoke
+        # SMOKE_SLUG is passed explicitly so the workflow's SLUG is the single
+        # source for the game/player entrypoint names; the script's own
+        # scaffold-substituted default is only a fallback.
+        env:
+          SMOKE_SLUG: ${{ env.SLUG }}
+          # The replay is BINARY (magic "DERK", header JSON + packed
+          # actions), so the script's "must parse as JSON" assertion is off
+          # and the file keeps a .replay name for the viewer job.
+          SMOKE_REQUIRE_REPLAY_JSON: "0"
+          SMOKE_REPLAY_OUT: dist/smoke/smoke.replay
+        run: ./tools/ci/docker_smoke.sh "${IMAGE}:ci"
+
+      # The replay this episode produced is the ONLY replay in CI that is
+      # known to be a real, current-format episode of this game. wasm-viewer
+      # downloads it and loads it in a browser, so the viewer is tested
+      # against the bytes the platform will actually serve rather than a
+      # hand-written fixture that can drift.
+      - name: Upload the smoke replay
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-replay
+          path: dist/smoke/
+          if-no-files-found: error
+          retention-days: 14
+
+  # ---------------------------------------------------------------------
+  # The static replay viewer. The platform serves THIS bundle from
+  # /v2/coworlds/replays/static/<cow_id>/<sha>/index.html, so a bundle that
+  # does not build (or is missing its wasm) means every hosted replay hangs.
+  # tools/build_replay_viewer.sh builds the Dockerfile's wasm-builder stage
+  # (pinned emscripten/emsdk:6.0.5) and copies viewer/dist out of it, because
+  # the runner has no emcc.
+  # ---------------------------------------------------------------------
+  wasm-viewer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # The bundle is EXECUTED here, not merely built, and it is executed against
+    # the replay docker-smoke just produced -- hence the dependency.
+    needs: docker-smoke
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+
+      # `coworld build` (bundle.py) refuses to package a source replay-viewer
+      # bundle unless the hook is BOTH a file and os.X_OK:
+      #   "Coworld builds with a source replay viewer bundle require an
+      #    executable build hook".
+      # Running it as `bash tools/build_replay_viewer.sh` would ignore the exec
+      # bit entirely, so a mode-0644 hook passed CI and only blew up later, in
+      # coworld-release.yml's "Build the Coworld manifest". Assert the bit, then
+      # invoke by path so CI exercises exactly what `coworld build` requires.
+      - name: Assert the replay-viewer build hook is present and executable
+        run: |
+          set -euo pipefail
+          test -f tools/build_replay_viewer.sh || {
+            echo "::error::tools/build_replay_viewer.sh is missing; coworld build needs it"
+            echo "::error::to emit the static replay bundle"
+            exit 1; }
+          test -x tools/build_replay_viewer.sh || {
+            echo "::error::tools/build_replay_viewer.sh must be committed executable (mode 100755):"
+            echo "::error::coworld build hard-requires os.X_OK on the build hook."
+            echo "::error::Fix with: git update-index --chmod=+x tools/build_replay_viewer.sh"
+            exit 1; }
+
+      - name: Assert the viewer load test is present
+        run: |
+          set -euo pipefail
+          test -s tools/ci/viewer_smoke.mjs || {
+            echo "::error::tools/ci/viewer_smoke.mjs is missing. It is the only gate that"
+            echo "::error::EXECUTES the replay viewer; without it a bundle that deadlocks"
+            echo "::error::(cogame-lantern, 2026-08-23) ships green. Copy it from"
+            echo "::error::coworld-builder templates/tools/ci/viewer_smoke.mjs."
+            exit 1; }
+
+      - name: Build the static replay viewer bundle
+        run: ./tools/build_replay_viewer.sh "$PWD/dist/static-replay-viewer"
+
+      - name: Assert the bundle is complete
+        run: |
+          set -euo pipefail
+          out="$PWD/dist/static-replay-viewer"
+          test -s "${out}/index.html" || {
+            echo "::error::${out}/index.html missing or empty"; exit 1; }
+          wasm_count="$(find "${out}" -name '*.wasm' -size +1c | wc -l | tr -d ' ')"
+          if [ "${wasm_count}" -lt 1 ]; then
+            echo "::error::no non-empty .wasm module in ${out}"
+            find "${out}" -type f | sed 's/^/  /'
+            exit 1
+          fi
+          echo "bundle OK:"
+          find "${out}" -type f -printf '  %p (%s bytes)\n'
+
+      # -----------------------------------------------------------------
+      # The load test. Everything above only proves files EXIST. cogame-lantern
+      # shipped a viewer whose emscripten link flags (MODULARIZE / EXPORT_NAME)
+      # and whose JS bootstrap came from two different starters: the factory was
+      # never called, no error was thrown, and softmax.com sat on
+      # "Loading replay..." forever with every file present and 200. Only
+      # opening the page in a browser sees that.
+      #
+      # Playwright is pinned to 1.55.0 in BOTH places -- the npm module and the
+      # browser download. Bump them together or the browser 404s.
+      # -----------------------------------------------------------------
+      - name: Download the smoke replay
+        uses: actions/download-artifact@v4
+        with:
+          name: smoke-replay
+          path: dist/smoke
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Playwright (pinned 1.55.0)
+        run: |
+          set -euo pipefail
+          npm install --no-save playwright@1.55.0
+          npx --yes playwright@1.55.0 install --with-deps chromium
+
+      - name: Load the bundle in a real browser
+        run: |
+          set -euo pipefail
+          # A for-loop, not `ls … | head -1`: under `set -o pipefail` an unmatched
+          # glob makes ls exit 2 and kills the step before the harness ever runs
+          # (cogame-raid 2026-08-23, run 32623414696).
+          replay=""
+          for candidate in dist/smoke/*.replay dist/smoke/replay.json; do
+            if [ -f "${candidate}" ]; then replay="${candidate}"; break; fi
+          done
+          test -n "${replay}" || {
+            echo "::error::docker-smoke uploaded no replay to dist/smoke"; ls -la dist/smoke || true; exit 1; }
+          echo "loading ${replay} in dist/static-replay-viewer"
+          # --strict-text-bounds fails the job if the viewer drew any text
+          # outside its canvas -- a bubble, caption or nameplate with nowhere
+          # to go, invisible to the load signal and to the screenshot
+          # (cogchemists 2026-08-24: four speech bubbles drawn at a negative y
+          # and clipped to slivers). Keep it for a FIXED arena, which is every
+          # coworld whose whole board fits the frame. DROP THIS FLAG ONLY if
+          # the board is pannable, where drawing off-frame is normal -- the
+          # count is still reported on stdout and in viewer-smoke.json.
+          node tools/ci/viewer_smoke.mjs \
+            --bundle dist/static-replay-viewer \
+            --replay "${replay}" \
+            --timeout 90 \
+            --strict-text-bounds
+
+      # The template's load test is game-agnostic (it knows only the
+      # starter chrome's optional ids). THIS game's appended block -- the
+      # draft-reveal screen, the scorebug, the clock, the scrubber beats and
+      # the transport-band rule -- is asserted by a sibling script, so
+      # tools/ci/viewer_smoke.mjs stays byte-identical to the template.
+      - name: Assert the derks-gym chrome
+        run: |
+          set -euo pipefail
+          replay=""
+          for candidate in dist/smoke/*.replay dist/smoke/replay.json; do
+            if [ -f "${candidate}" ]; then replay="${candidate}"; break; fi
+          done
+          test -n "${replay}" || { echo "::error::no smoke replay"; exit 1; }
+          node tools/ci/derk_viewer_checks.mjs \
+            --bundle dist/static-replay-viewer \
+            --replay "${replay}" \
+            --timeout 90
+
+      - name: Upload the viewer smoke evidence
+        # Always: the screenshot and the JSON are most useful when the job is red.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: viewer-smoke
+          path: |
+            viewer-smoke.png
+            viewer-smoke.json
+            derk-viewer-1280.png
+            derk-viewer-360.png
+            derk-viewer-checks.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload the bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: static-replay-viewer
+          path: dist/static-replay-viewer
+          if-no-files-found: error
+          retention-days: 14
+
+  # ---------------------------------------------------------------------
+  # Upload a new "derks-gym" version to Softmax (inherited from the
+  # starter). Gated on green test + docker-smoke + wasm-viewer, so a red
+  # push can never publish (each failed publish burns a registry row).
+  #
+  # The version is the HIGHEST EXISTING derks-gym registry row with the
+  # patch bumped (tools/ci/next_coworld_version.py), unless an explicit
+  # version is passed via workflow_dispatch. Do NOT use `coworld
+  # next-version`: it is canonical-based, so an orphan non-canonical row
+  # from a half-failed publish wedges every later publish with 409s (see
+  # the picker's docstring).
+  #
+  # Auth: the SOFTMAX_TOKEN repo secret (propagated by coworld-builder's
+  # propagate-secrets.yml). Absent, this job warns and skips -- unless the
+  # UPLOAD_REQUIRED repo variable is true, which makes it a hard failure.
+  # ---------------------------------------------------------------------
+  upload-coworld:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    needs: [test, docker-smoke, wasm-viewer]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    # One upload at a time; queued runs wait so version query/bump cannot race.
+    concurrency:
+      group: upload-coworld
+      cancel-in-progress: false
+    env:
+      HAVE_SOFTMAX_TOKEN: ${{ secrets.SOFTMAX_TOKEN != '' }}
+    steps:
+      - name: Check upload credential
+        env:
+          UPLOAD_REQUIRED: ${{ vars.UPLOAD_REQUIRED }}
+        run: |
+          if [ "$HAVE_SOFTMAX_TOKEN" != "true" ]; then
+            if [ "$UPLOAD_REQUIRED" = "true" ]; then
+              echo "::error::SOFTMAX_TOKEN secret is not set but the" \
+                   " UPLOAD_REQUIRED repo variable is true: uploads are" \
+                   " expected to run. Restore the secret" \
+                   " (dispatch propagate-secrets.yml in Metta-AI/coworld-builder)" \
+                   " or clear the variable."
+              exit 1
+            fi
+            echo "::warning::SOFTMAX_TOKEN secret is not set; skipping the Coworld upload."
+          fi
+      - uses: actions/checkout@v5
+        if: env.HAVE_SOFTMAX_TOKEN == 'true'
+      - uses: astral-sh/setup-uv@v6
+        if: env.HAVE_SOFTMAX_TOKEN == 'true'
+      - uses: docker/setup-buildx-action@v3
+        if: env.HAVE_SOFTMAX_TOKEN == 'true'
+      - name: Authenticate to Softmax
+        if: env.HAVE_SOFTMAX_TOKEN == 'true'
+        env:
+          SOFTMAX_TOKEN: ${{ secrets.SOFTMAX_TOKEN }}
+        # Token stays in the environment, never on a rendered argv.
+        run: uvx --from "$COWORLD_PKG" softmax set-token "$SOFTMAX_TOKEN"
+      - name: Determine version
+        if: env.HAVE_SOFTMAX_TOKEN == 'true'
+        id: version
+        env:
+          SOFTMAX_TOKEN: ${{ secrets.SOFTMAX_TOKEN }}
+          # The dispatch input reaches the shell via env, never by template
+          # interpolation into the script (script-injection hardening).
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 tools/ci/test_next_coworld_version.py
+          version="${INPUT_VERSION:-}"
+          if [ -z "$version" ]; then
+            version=$(python3 tools/ci/next_coworld_version.py derks-gym)
+          fi
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "invalid version '$version' (expected MAJOR.MINOR.PATCH)" >&2
+            exit 1
+          fi
+          echo "Uploading as derks-gym $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Build, certify, and upload
+        if: env.HAVE_SOFTMAX_TOKEN == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          uvx --from "$COWORLD_PKG" coworld build \
+            --version "$VERSION" \
+            --project . \
+            --compose compose.yaml \
+            --template coworld_manifest_template.json \
+            --output dist/coworld_manifest.json
+          uvx --from "$COWORLD_PKG" coworld upload-coworld \
+            dist/coworld_manifest.json \
+            --timeout-seconds 900 \
+            --wait-hosted-smoke \
+            --hosted-smoke-timeout-seconds 1800

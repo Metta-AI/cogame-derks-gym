@@ -1,0 +1,26 @@
+{
+  "seed": 7,
+  "max_ticks": 1000,
+  "tick_deadline_ms": 1000,
+  "player_connect_timeout_seconds": 180,
+  "draft_enabled": true,
+  "draft_deadline_ms": 10000,
+  "catalog_version": "v1",
+  "num_agents": 6,
+  "players": [
+    {"name": "player1"},
+    {"name": "player2"},
+    {"name": "player3"},
+    {"name": "player4"},
+    {"name": "player5"},
+    {"name": "player6"}
+  ],
+  "tokens": [
+    "token-0",
+    "token-1",
+    "token-2",
+    "token-3",
+    "token-4",
+    "token-5"
+  ]
+}

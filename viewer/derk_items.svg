@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  cogame-derks-gym item glyphs: one hand-authored 24x24 <symbol> per
+  catalog id, referenced from derk_chrome.js as
+  <svg><use href="derk_items.svg#item-<id>"></use></svg>.
+
+  CLOSED CONTRACT (AGENTS.md rule 3): the twelve ids here are exactly the
+  twelve ids in server/cogame_derks_gym/catalog.py and docs/DRAFT.md.
+  tests/test_catalog.py fails if any of the four drift apart.
+
+  Everything strokes/fills in currentColor so the roster, the draft cards
+  and the feed can tint a glyph by CSS alone. No external fetch, no
+  raster assets, no placeholders.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+
+  <!-- ARM -->
+  <symbol id="item-arm_none" viewBox="0 0 24 24">
+    <title>Bare Claws</title>
+    <g fill="none" stroke="currentColor" stroke-width="1.6"
+       stroke-linecap="round">
+      <path d="M6 20c1.5-6 3-10 3.5-16"/>
+      <path d="M11 20c0.6-6 1.2-10 1.2-16"/>
+      <path d="M16 20c-0.4-6-0.4-10 1.4-16"/>
+      <path d="M4.5 20h15"/>
+    </g>
+  </symbol>
+
+  <symbol id="item-arm_blaster" viewBox="0 0 24 24">
+    <title>Blaster</title>
+    <g fill="none" stroke="currentColor" stroke-width="1.6"
+       stroke-linejoin="round">
+      <path d="M3 9h11l4 2.5-4 2.5H3z"/>
+      <path d="M6 14v5h3l1-5"/>
+      <path d="M18.5 8.5l3-1.5M18.5 15.5l3 1.5"/>
+      <circle cx="16.5" cy="11.8" r="0.9" fill="currentColor" stroke="none"/>
+    </g>
+  </symbol>
+
+  <symbol id="item-arm_cleaver" viewBox="0 0 24 24">
+    <title>Cleaver</title>
+    <g fill="none" stroke="currentColor" stroke-width="1.6"
+       stroke-linejoin="round">
+      <path d="M4 3l13 3.5c3 2 3 8 0 10L4 20z"/>
+      <path d="M4 3v17"/>
+      <path d="M8 7.5c3.5 2.5 3.5 6.5 0 9"/>
+    </g>
+  </symbol>
+
+  <symbol id="item-arm_needler" viewBox="0 0 24 24">
+    <title>Needler</title>
+    <g fill="none" stroke="currentColor" stroke-width="1.6"
+       stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 3L9 15"/>
+      <path d="M4 20l5-5"/>
+      <path d="M13 7l4 4"/>
+      <path d="M6.5 12.5l-3.5-1 1 3.5"/>
+      <path d="M18 6l3-3"/>
+    </g>
+  </symbol>
+
+  <!-- TAIL -->
+  <symbol id="item-tail_none" viewBox="0 0 24 24">
+    <title>Stub Tail</title>
+    <g fill="none" stroke="currentColor" stroke-width="1.6"
+       stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 16c4 0 7-1 9-3"/>
+      <path d="M13 9.5c2.5 0 4 1.5 4 3.5s-1.5 3.5-4 3.5"/>
+      <path d="M4 16v-2.5"/>
+    </g>
+  </symbol>
+
+  <symbol id="item-tail_plate" viewBox="0 0 24 24">
+    <title>Iron Plate</title>
+    <g fill="none" stroke="currentColor" stroke-width="1.6"
+       stroke-linejoin="round">
+      <path d="M12 2l8 3v7c0 4.5-3.4 8-8 10-4.6-2-8-5.5-8-10V5z"/>
+      <path d="M4.5 10.5h15M4.5 15h14"/>
+      <circle cx="8" cy="7" r="0.9" fill="currentColor" stroke="none"/>
+      <circle cx="16" cy="7" r="0.9" fill="currentColor" stroke="none"/>
+    </g>
+  </symbol>
+
+  <symbol id="item-tail_stinger" viewBox="0 0 24 24">
+    <title>Stinger</title>
+    <g fill="none" stroke="currentColor" stroke-width="1.6"
+       stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 19c5-1 9-4 11-8"/>
+      <path d="M14 11l6-7"/>
+      <path d="M17.5 6.5l3.5-2.5-1 4"/>
+      <path d="M9 15.5l1.5 3M6 17.5l1 3"/>
+    </g>
+  </symbol>
+
+  <symbol id="item-tail_rotor" viewBox="0 0 24 24">
+    <title>Rotor Tail</title>
+    <g fill="none" stroke="currentColor" stroke-width="1.6"
+       stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="2.6"/>
+      <path d="M12 9.4C12 5 13.5 3 17 3c1.4 2.8 0 6.4-5 6.4z"/>
+      <path d="M9.7 13.3C6 15.5 3.4 15 1.9 11.9c2-2.2 5.8-2.4 7.8 1.4z"/>
+      <path d="M14.3 13.3c3.7 2.2 4.3 4.8 2 7.5-2.6-1.1-4.2-4.5-2-7.5z"/>
+    </g>
+  </symbol>
+
+  <!-- MISC -->
+  <symbol id="item-misc_none" viewBox="0 0 24 24">
+    <title>Nothing</title>
+    <g fill="none" stroke="currentColor" stroke-width="1.4"
+       stroke-linecap="round">
+      <circle cx="12" cy="12" r="8" stroke-dasharray="2.5 2.5"/>
+      <path d="M7.5 16.5l9-9"/>
+    </g>
+  </symbol>
+
+  <symbol id="item-misc_regen" viewBox="0 0 24 24">
+    <title>Regen Cell</title>
+    <g fill="none" stroke="currentColor" stroke-width="1.6"
+       stroke-linecap="round" stroke-linejoin="round">
+      <rect x="6" y="4" width="12" height="16" rx="3"/>
+      <path d="M9 4V2.5h6V4"/>
+      <path d="M12 8.5v7M8.5 12h7"/>
+    </g>
+  </symbol>
+
+  <symbol id="item-misc_battery" viewBox="0 0 24 24">
+    <title>Mana Battery</title>
+    <g fill="none" stroke="currentColor" stroke-width="1.6"
+       stroke-linejoin="round">
+      <rect x="3.5" y="7" width="15" height="10" rx="2"/>
+      <path d="M18.5 10.5h2v3h-2"/>
+      <path d="M11.5 8.8L8.5 13h3l-1 3.2 3.5-4.4h-3z" fill="currentColor"
+            stroke="none"/>
+    </g>
+  </symbol>
+
+  <symbol id="item-misc_focus" viewBox="0 0 24 24">
+    <title>Focus Chip</title>
+    <g fill="none" stroke="currentColor" stroke-width="1.6"
+       stroke-linecap="round" stroke-linejoin="round">
+      <rect x="6" y="6" width="12" height="12" rx="1.5"/>
+      <circle cx="12" cy="12" r="2.4"/>
+      <path d="M9 6V3.5M15 6V3.5M9 18v2.5M15 18v2.5"/>
+      <path d="M6 9H3.5M6 15H3.5M18 9h2.5M18 15h2.5"/>
+    </g>
+  </symbol>
+
+</svg>

@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>cogame-derks-gym replay</title>
+<link rel="stylesheet" href="derk_chrome.css">
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; min-height: 100vh; background: #0b1414; color: #cfe;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    display: flex; flex-direction: column; align-items: center;
+  }
+  header { margin: 10px 0 4px; font-size: 14px; color: #6db; }
+  #stage { position: relative; }
+  canvas {
+    display: block; background: #000; max-width: 100vw; height: auto;
+    image-rendering: pixelated;
+  }
+  #status {
+    position: absolute; inset: 0; display: flex; align-items: center;
+    justify-content: center; font-size: 16px; color: #9cc;
+    pointer-events: none; text-align: center; white-space: pre-line;
+  }
+  #controls {
+    display: flex; gap: 10px; align-items: center; margin: 10px 0;
+    flex-wrap: wrap; justify-content: center;
+  }
+  button, select {
+    background: #12302c; color: #cfe; border: 1px solid #2a5;
+    border-radius: 4px; font: inherit; padding: 4px 12px; cursor: pointer;
+  }
+  button:disabled { opacity: .4; cursor: default; }
+  #seek { width: 380px; }
+  #tickinfo { min-width: 130px; text-align: center; }
+  #teams {
+    display: flex; gap: 40px; margin: 6px 0 16px; font-size: 13px;
+  }
+  #teams h3 { margin: 0 0 4px; font-size: 13px; font-weight: bold; }
+  #teams .radiant h3 { color: #4cf; }
+  #teams .dire h3 { color: #f66; }
+  #teams ul { list-style: none; margin: 0; padding: 0; }
+  #endcard {
+    margin: 4px 0 10px; font-size: 15px; color: #fd5; min-height: 1.2em;
+  }
+  #warn { margin: 2px 0 6px; font-size: 13px; color: #fa4; }
+</style>
+</head>
+<body>
+<header>cogame-derks-gym replay viewer</header>
+<div id="stage">
+  <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+  <div id="status">loading wasm ...</div>
+</div>
+<div id="controls">
+  <button id="playpause" disabled>play</button>
+  <select id="speed" disabled>
+    <option value="1">1x</option>
+    <option value="4">4x</option>
+    <option value="16">16x</option>
+    <option value="64">64x</option>
+  </select>
+  <input id="seek" type="range" min="0" max="0" value="0" step="1" disabled>
+  <span id="tickinfo">- / -</span>
+</div>
+<div id="endcard"></div>
+<div id="warn"></div>
+<div id="teams">
+  <div class="radiant"><h3>Radiant</h3><ul id="radiant-names"></ul></div>
+  <div class="dire"><h3>Dire</h3><ul id="dire-names"></ul></div>
+</div>
+
+<!-- ===================================================================
+     cogame-derks-gym additions to the inherited cogame-moba chrome.
+     Everything above this banner is the starter's page: no starter id is
+     reused, redefined, re-styled or removed. Every id below is
+     derk-prefixed and every style lives in derk_chrome.css.
+     =================================================================== -->
+<div id="derk">
+  <div id="derk-scorebug">
+    <div class="derk-team derk-radiant">
+      <span class="derk-side">RADIANT</span>
+      <span class="derk-hp" id="derk-hp-radiant">4500</span>
+      <span class="derk-bar"><i id="derk-bar-radiant"></i></span>
+      <span class="derk-stat" id="derk-towers-radiant">0 towers</span>
+      <span class="derk-stat" id="derk-kills-radiant">0 kills</span>
+    </div>
+    <div class="derk-team derk-dire">
+      <span class="derk-side">DIRE</span>
+      <span class="derk-hp" id="derk-hp-dire">4500</span>
+      <span class="derk-bar"><i id="derk-bar-dire"></i></span>
+      <span class="derk-stat" id="derk-towers-dire">0 towers</span>
+      <span class="derk-stat" id="derk-kills-dire">0 kills</span>
+    </div>
+  </div>
+  <div id="derk-clock">tick - / - &middot; 0:00</div>
+  <div id="derk-feed" aria-live="off"></div>
+  <div id="derk-roster"></div>
+  <div id="derk-viewpanel">
+    <div id="derk-cameras" role="group" aria-label="camera"></div>
+    <canvas id="derk-minimap" width="128" height="128"
+            aria-label="minimap"></canvas>
+  </div>
+  <div id="derk-beats" aria-label="events"></div>
+  <div id="derk-draft" hidden>
+    <div id="derk-draft-inner">
+      <h2>Draft reveal <span id="derk-draft-count"></span></h2>
+      <div id="derk-draft-cols"></div>
+      <button id="derk-draft-close" type="button">close</button>
+    </div>
+  </div>
+  <div id="derk-endcard" hidden>
+    <div id="derk-endcard-inner"></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const statusEl = $("status");
+
+let header = null;       // replay header JSON (JS-side parse)
+let totalTicks = 0;
+let seeking = false;
+
+function setStatus(text) { statusEl.textContent = text; }
+
+// Replay header parse: magic "DERK" + version u8 + header_len u32le + JSON.
+// (Binary layout authority: server/cogame_derks_gym/replay.py.)
+function parseHeader(buf) {
+  if (buf.length < 9) throw new Error("replay too short");
+  const magic = String.fromCharCode(...buf.slice(0, 4));
+  if (magic !== "DERK") throw new Error("bad magic: " + magic);
+  if (buf[4] !== 2) throw new Error("unsupported version: " + buf[4]);
+  const headerLen =
+    new DataView(buf.buffer, buf.byteOffset + 5, 4).getUint32(0, true);
+  return JSON.parse(new TextDecoder().decode(buf.slice(9, 9 + headerLen)));
+}
+
+// Names overlay: seat i controls the single hero header.seat_hero_pids[i];
+// pids 0-4 are radiant, 5-9 dire. textContent only — names are
+// player-controlled data.
+function fillNames(cfg) {
+  const pids = (header && header.seat_hero_pids) || [0, 1, 2, 5, 6, 7];
+  cfg.players.forEach((p, seat) => {
+    const team = Math.floor((pids[seat] === undefined ? seat : pids[seat]) / 5);
+    const li = document.createElement("li");
+    li.textContent = p.name;
+    $(team === 0 ? "radiant-names" : "dire-names").appendChild(li);
+  });
+}
+
+function winnerText() {
+  const r = header.result || {};
+  const who = r.winner === 0 ? "radiant wins"
+    : r.winner === 1 ? "dire wins" : "draw";
+  return r.end_reason ? `${who} (${r.end_reason})` : who;
+}
+
+function refreshUi() {
+  const tick = Module.ccall("viewer_tick", "number", [], []);
+  const playing = Module.ccall("viewer_playing", "number", [], []);
+  $("tickinfo").textContent = `${tick} / ${totalTicks}`;
+  if (!seeking) $("seek").value = tick;
+  const ended = !playing && tick >= totalTicks && totalTicks > 0;
+  $("playpause").textContent = playing ? "pause" : (ended ? "replay" : "play");
+  $("endcard").textContent = ended ? winnerText() : "";
+  // derks-gym addition: per-frame readouts (scorebug, clock, feed,
+  // minimap, endcard) and the data-replay-loaded signal.
+  if (typeof derkOnFrame === "function") derkOnFrame(tick, ended);
+  requestAnimationFrame(refreshUi);
+}
+
+async function loadReplay() {
+  const url = new URLSearchParams(location.search).get("replay")
+    || "/replay-data";
+  setStatus("fetching replay ...");
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`fetch ${url}: HTTP ${resp.status}`);
+  const bytes = new Uint8Array(await resp.arrayBuffer());
+  header = parseHeader(bytes);
+  fillNames(header.config);
+
+  // sim/build_viewer.sh embeds the sha of the sim wasm this viewer was
+  // built alongside (sim_sha.js, optional). A replay recorded with a
+  // different sim build may re-simulate divergently — warn on screen.
+  const builtSha = window.SIM_WASM_SHA256;
+  const replaySha = header.sim_wasm_sha256;
+  if (builtSha && replaySha && replaySha !== "unknown" &&
+      builtSha !== replaySha) {
+    $("warn").textContent =
+      "warning: replay was recorded with a different sim build (replay " +
+      replaySha.slice(0, 12) + "… vs viewer " +
+      builtSha.slice(0, 12) + "…); re-simulation may diverge";
+  }
+
+  // Copy into the wasm heap; the buffer stays alive for the page's
+  // lifetime (viewer_load keeps a pointer to the action body).
+  const ptr = Module._malloc(bytes.length);
+  Module.HEAPU8.set(bytes, ptr);
+  if (!Number.isInteger(header.config.seed)) {
+    throw new Error(
+      "header config.seed is not an integer: " + header.config.seed);
+  }
+  const seed = header.config.seed >>> 0;  // & 0xFFFFFFFF, like the host
+  totalTicks = Module.ccall(
+    "viewer_load", "number",
+    ["number", "number", "number"], [ptr, bytes.length, seed]);
+  if (totalTicks < 0) throw new Error("viewer_load rejected replay bytes");
+  if (totalTicks !== header.tick_count) {
+    throw new Error(
+      `body has ${totalTicks} ticks, header says ${header.tick_count}`);
+  }
+
+  $("seek").max = totalTicks;
+  for (const el of ["playpause", "speed", "seek"]) $(el).disabled = false;
+  setStatus("");
+  Module.ccall("viewer_set_playing", null, ["number"], [1]);
+  refreshUi();
+  // derks-gym addition: hand the header to the appended game block
+  // (derk_chrome.js) — it pushes the drafted loadouts into the sim and
+  // builds the scorebug, roster, draft screen, feed and scrubber beats.
+  if (typeof derkOnLoad === "function") derkOnLoad(header, totalTicks);
+}
+
+$("playpause").addEventListener("click", () => {
+  const playing = Module.ccall("viewer_playing", "number", [], []);
+  if (playing) {
+    Module.ccall("viewer_set_playing", null, ["number"], [0]);
+    return;
+  }
+  const tick = Module.ccall("viewer_tick", "number", [], []);
+  if (tick >= totalTicks) {  // ended: restart from tick 0
+    Module.ccall("viewer_seek", null, ["number"], [0]);
+  }
+  Module.ccall("viewer_set_playing", null, ["number"], [1]);
+});
+
+$("speed").addEventListener("change", (e) => {
+  Module.ccall("viewer_set_speed", null, ["number"], [Number(e.target.value)]);
+});
+
+// Seek re-simulates from tick 0 (deterministic but not free): preview the
+// target while dragging, re-sim once on release. A drag that ends on the
+// value it started at fires no `change`, so pointerup/keyup also clear
+// the preview state; seekGen guards a stale scheduled seek from
+// clobbering a newer drag.
+let seekGen = 0;
+$("seek").addEventListener("input", (e) => {
+  seeking = true;
+  if (typeof derkDismissEndcard === "function") derkDismissEndcard();
+  $("tickinfo").textContent = `${e.target.value} / ${totalTicks}`;
+});
+const endSeekPreview = () => {
+  seeking = false;
+  if (typeof derkDismissEndcard === "function") derkDismissEndcard();
+};
+$("seek").addEventListener("pointerup", endSeekPreview);
+$("seek").addEventListener("keyup", endSeekPreview);
+$("seek").addEventListener("change", (e) => {
+  const target = Number(e.target.value);
+  if (typeof derkDismissEndcard === "function") derkDismissEndcard();
+  const gen = ++seekGen;
+  seeking = true;  // hold the preview until this seek lands
+  setStatus(`seeking to tick ${target} ...`);
+  // let the status paint before the (blocking) re-sim
+  setTimeout(() => {
+    if (gen !== seekGen) return;  // superseded by a newer seek
+    Module.ccall("viewer_seek", null, ["number"], [target]);
+    setStatus("");
+    seeking = false;
+  }, 20);
+});
+
+// derks-gym addition: every failure path also sets
+// <html data-replay-error="..."> (tools/ci/viewer_smoke.mjs polls it, and
+// a silent failure is the worst kind — see the lantern deadlock).
+function derkFail(message) {
+  setStatus("failed:\n" + message);
+  if (typeof derkSetError === "function") derkSetError(message);
+}
+
+var Module = {
+  canvas: $("canvas"),
+  onRuntimeInitialized: () => {
+    loadReplay().catch((e) => derkFail(e.message));
+  },
+  printErr: (t) => console.error(t),
+  // Runtime death must be visible on the page, not only in the console
+  // (e.g. an OOM abort mid-seek would otherwise just freeze the canvas).
+  onAbort: (what) => derkFail("viewer wasm aborted: " + what),
+  onExit: (code) => { if (code !== 0) derkFail("viewer wasm exited: " + code); },
+};
+</script>
+<script src="sim_sha.js"></script>
+<script src="derk_chrome.js"></script>
+<script src="derk_viewer.js"></script>
+</body>
+</html>

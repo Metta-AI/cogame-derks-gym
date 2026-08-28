@@ -1,0 +1,33 @@
+[
+  {
+    "name": "derk-drafter-v1",
+    "run": "/bin/derks-gym-player",
+    "env": {
+      "PLAYER_PROMPT": "derk-drafter-v1",
+      "ANTHROPIC_API_KEY_URI": "secret://coworld/derks-gym/anthropic_api_key"
+    }
+  },
+  {
+    "name": "derk-metagamer-v1",
+    "run": "/bin/derks-gym-player",
+    "env": {
+      "PLAYER_PROMPT": "derk-metagamer-v1",
+      "ANTHROPIC_API_KEY_URI": "secret://coworld/derks-gym/anthropic_api_key"
+    },
+    "player": "ply_bac48eb1-662e-44f8-973d-f3e016dccf5d"
+  },
+  {
+    "name": "derk-puffer-forge",
+    "run": "/bin/derks-gym-player",
+    "env": {
+      "PLAYER_SCRIPTED": "puffer-forge"
+    }
+  },
+  {
+    "name": "derk-lane-brawler",
+    "run": "/bin/derks-gym-player",
+    "env": {
+      "PLAYER_SCRIPTED": "lane-brawler"
+    }
+  }
+]

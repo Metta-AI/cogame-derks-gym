@@ -1,0 +1,285 @@
+/* cogame-derks-gym additions to the inherited cogame-moba chrome.
+ *
+ * Every selector here is derk-prefixed: no starter id or class is
+ * re-styled, and the starter's inline <style> is untouched. Palette is
+ * the starter's (#0b1414 page, #cfe text, #4cf radiant, #f66 dire,
+ * #6db accent, #fd5 endcard).
+ *
+ * Two custom properties, both set on :root by relayout() in
+ * derk_chrome.js:
+ *   --band      measured height of the starter's #controls + 8px. EVERY
+ *               fixed overlay stops at bottom: var(--band), so nothing is
+ *               ever laid over the transport band.
+ *   --hudscale  clamp(0.8, 100vw/1100, 1). The 0.8 floor is arithmetic,
+ *               not taste: the smallest text here is the 13px feed, and
+ *               13 x 0.8 = 10.4px is above the 10px legibility floor at a
+ *               360px viewport (the roster/scorebug base is 14px ->
+ *               11.2px). No text is ever read off the canvas.
+ */
+
+:root {
+  --band: 48px;
+  --hudscale: 1;
+}
+
+/* display:contents lets the appended block's children be flex items of
+ * the starter's body flex column, so the scorebug and clock can sit at
+ * the top of the page while the rest of the block follows #teams —
+ * without giving any starter element an order. */
+#derk { display: contents; }
+
+/* -- scorebug + clock (top of the page) ---------------------------- */
+
+#derk-scorebug {
+  order: -1;
+  display: flex;
+  gap: calc(28px * var(--hudscale));
+  flex-wrap: wrap;
+  justify-content: center;
+  margin: 8px 0 2px;
+  font-size: calc(14px * var(--hudscale));
+  line-height: 1.4;
+}
+#derk-scorebug .derk-team {
+  display: flex;
+  align-items: center;
+  gap: calc(8px * var(--hudscale));
+}
+#derk-scorebug .derk-side { font-weight: bold; letter-spacing: .08em; }
+#derk-scorebug .derk-radiant .derk-side { color: #4cf; }
+#derk-scorebug .derk-dire .derk-side { color: #f66; }
+#derk-scorebug .derk-hp { min-width: 3.4em; text-align: right; }
+#derk-scorebug .derk-bar {
+  display: inline-block;
+  width: calc(120px * var(--hudscale));
+  height: calc(8px * var(--hudscale));
+  background: #12302c;
+  border: 1px solid #2a5;
+  border-radius: 3px;
+  overflow: hidden;
+}
+#derk-scorebug .derk-bar i {
+  display: block;
+  height: 100%;
+  width: 100%;
+  background: #4cf;
+  transition: width .2s linear;
+}
+#derk-scorebug .derk-dire .derk-bar i { background: #f66; }
+#derk-scorebug .derk-stat { color: #9cc; white-space: nowrap; }
+
+#derk-clock {
+  order: -1;
+  font-size: calc(14px * var(--hudscale));
+  color: #6db;
+  margin: 0 0 4px;
+}
+
+/* -- feed ---------------------------------------------------------- */
+
+#derk-feed {
+  width: min(100vw, 760px);
+  min-height: calc(3.2em * var(--hudscale));
+  margin: 6px auto 2px;
+  font-size: calc(13px * var(--hudscale));
+  line-height: 1.45;
+  color: #9cc;
+}
+#derk-feed div { white-space: nowrap; overflow: hidden;
+                 text-overflow: ellipsis; }
+#derk-feed .derk-k-draft { color: #6db; }
+#derk-feed .derk-k-first_blood { color: #fd5; }
+#derk-feed .derk-k-kill { color: #f96; }
+#derk-feed .derk-k-tower { color: #cfe; }
+#derk-feed .derk-k-level_spike { color: #8c8; }
+#derk-feed .derk-k-ancient { color: #ff8; }
+#derk-feed .derk-k-end { color: #fd5; }
+
+/* -- roster -------------------------------------------------------- */
+
+#derk-roster {
+  width: min(100vw, 760px);
+  margin: 4px auto 8px;
+  font-size: calc(14px * var(--hudscale));
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 2px;
+}
+#derk-roster .derk-row {
+  display: flex;
+  align-items: center;
+  gap: calc(8px * var(--hudscale));
+  padding: 1px 4px;
+  border-left: 3px solid #4cf;
+}
+#derk-roster .derk-row.derk-dire { border-left-color: #f66; }
+#derk-roster .derk-row.derk-house { opacity: .55; }
+#derk-roster .derk-alias { min-width: 6.5em; }
+#derk-roster .derk-name {
+  flex: 1 1 auto;
+  min-width: 3.2em;
+  color: #6db;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+#derk-roster .derk-role { color: #9cc; min-width: 4.5em; }
+#derk-roster .derk-kd { color: #cfe; min-width: 4.5em; }
+#derk-roster .derk-deltas { color: #9cc; white-space: nowrap; }
+#derk-roster .derk-up { color: #6d6; }
+#derk-roster .derk-down { color: #f77; }
+
+.derk-glyphs { display: inline-flex; gap: 2px; }
+.derk-glyph {
+  width: calc(18px * var(--hudscale));
+  height: calc(18px * var(--hudscale));
+  color: #6db;
+}
+
+/* -- viewpanel: camera select + minimap ---------------------------- */
+
+#derk-viewpanel {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin: 0 auto 18px;
+  font-size: calc(13px * var(--hudscale));
+}
+#derk-cameras { display: flex; gap: 6px; flex-wrap: wrap; max-width: 60vw; }
+#derk-cameras button {
+  background: #12302c; color: #cfe; border: 1px solid #2a5;
+  border-radius: 4px; font: inherit; padding: 2px 8px; cursor: pointer;
+}
+#derk-cameras button[aria-pressed="true"] {
+  background: #1d5a4e; border-color: #6db; color: #eff;
+}
+#derk-minimap {
+  width: 128px; height: 128px;
+  background: #06100f;
+  border: 1px solid #2a5;
+  image-rendering: pixelated;
+  cursor: pointer;
+}
+
+/* -- scrubber beats ------------------------------------------------ */
+
+/* Positioned by relayout() from #seek's own bounding box, so the starter
+ * markup stays untouched. The container never eats a click; only the
+ * beats do. */
+#derk-beats {
+  position: fixed;
+  pointer-events: none;
+  z-index: 5;
+  display: none;
+}
+#derk-beats.derk-on { display: block; }
+#derk-beats button {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  pointer-events: auto;
+  min-width: 12px;
+  height: 14px;
+  padding: 0 3px;
+  font: inherit;
+  font-size: calc(9px * var(--hudscale));
+  line-height: 14px;
+  color: #041;
+  background: #6db;
+  border: 1px solid #041;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+#derk-beats .beat-draft { background: #6db; }
+#derk-beats .beat-first_blood { background: #fd5; }
+#derk-beats .beat-kill { background: #f96; }
+#derk-beats .beat-tower { background: #cfe; }
+#derk-beats .beat-level_spike { background: #8c8; }
+#derk-beats .beat-ancient { background: #ff8; }
+#derk-beats .beat-end { background: #fa4; }
+#derk-beats .beat-more { background: #2a5; color: #cfe; }
+
+/* -- the draft-reveal screen and the endcard ----------------------- */
+
+/* Both stop at the transport band: inset: 0 0 var(--band) 0. */
+#derk-draft,
+#derk-endcard {
+  position: fixed;
+  inset: 0 0 var(--band) 0;
+  z-index: 10;
+  background: rgba(6, 16, 15, .94);
+  overflow: auto;
+  padding: 12px;
+  box-sizing: border-box;
+}
+#derk-draft[hidden], #derk-endcard[hidden] { display: none; }
+
+#derk-draft h2, #derk-endcard h2 {
+  margin: 0 0 8px;
+  font-size: calc(16px * var(--hudscale));
+  color: #6db;
+  text-align: center;
+}
+#derk-draft-count { color: #9cc; font-weight: normal; }
+#derk-draft-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  max-width: 960px;
+  margin: 0 auto;
+}
+#derk-draft-close, #derk-endcard .derk-close {
+  display: block;
+  margin: 10px auto 0;
+  background: #12302c; color: #cfe; border: 1px solid #2a5;
+  border-radius: 4px; font: inherit; padding: 4px 12px; cursor: pointer;
+}
+.derk-card {
+  border: 1px solid #2a5;
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: calc(13px * var(--hudscale));
+  line-height: 1.4;
+}
+.derk-card.derk-radiant { border-left: 3px solid #4cf; }
+.derk-card.derk-dire { border-left: 3px solid #f66; }
+.derk-card .derk-head { display: flex; gap: 8px; align-items: center; }
+.derk-card .derk-alias { font-weight: bold; }
+.derk-card .derk-name { color: #6db; }
+.derk-card .derk-role { color: #9cc; }
+.derk-card .derk-items { color: #cfe; }
+.derk-card .derk-stats { color: #9cc; }
+.derk-card .derk-note { color: #fd5; font-style: italic; }
+.derk-card .derk-fallback { color: #fa4; }
+
+#derk-endcard-inner {
+  max-width: 760px;
+  margin: 0 auto;
+  font-size: calc(14px * var(--hudscale));
+  text-align: center;
+}
+#derk-endcard .derk-winner {
+  font-size: calc(20px * var(--hudscale));
+  color: #fd5;
+  margin-bottom: 6px;
+}
+#derk-endcard .derk-cards {
+  display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;
+  margin-top: 10px; text-align: left;
+}
+
+/* -- narrow viewports (the featured-match iframe is ~360px) -------- */
+
+@media (max-width: 720px) {
+  #derk-scorebug { gap: calc(12px * var(--hudscale)); }
+  #derk-scorebug .derk-bar { width: calc(70px * var(--hudscale)); }
+  #derk-scorebug .derk-stat { display: none; }
+  #derk-draft-cols { grid-template-columns: 1fr; }
+  #derk-endcard .derk-cards { grid-template-columns: 1fr; }
+  #derk-roster .derk-role, #derk-roster .derk-deltas { display: none; }
+  #derk-minimap { width: 96px; height: 96px; }
+  #derk-cameras { max-width: 100vw; }
+}

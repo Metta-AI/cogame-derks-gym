@@ -1,0 +1,33 @@
+--- a/moba.h
++++ b/moba.h
+@@ -7,6 +7,7 @@
+ #include <time.h> // xxd -i game_map.npy > game_map.h
+ #include "game_map.h"
+ 
++#ifdef MOBA_RENDER
+ #include "raylib.h"
+ 
+ #if defined(PLATFORM_DESKTOP)
+@@ -14,6 +15,7 @@
+ #else
+     #define GLSL_VERSION 100
+ #endif
++#endif // MOBA_RENDER
+ 
+ 
+ #define NUM_PLAYERS 10
+@@ -1967,6 +1969,7 @@
+     compute_observations(env);
+ }
+ 
++#ifdef MOBA_RENDER
+ // Raylib client
+ Color COLORS[] = {
+     (Color){6, 24, 24, 255},     // Empty
+@@ -2449,3 +2452,5 @@
+ }
+ 
+ 
++
++#endif // MOBA_RENDER
+\ No newline at end of file

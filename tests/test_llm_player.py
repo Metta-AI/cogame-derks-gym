@@ -1,0 +1,267 @@
+"""The prompt policies: parsing, the one retry, and the fallbacks.
+
+The Anthropic transport is stubbed everywhere here — a test suite must
+never make a network call — but the code under test is the real
+`PromptDraftPolicy.on_draft`, including its timeout, its single retry at
+temperature 0 and its fall-back to the scripted draft rule.
+"""
+
+import asyncio
+import json
+
+import pytest
+
+from cogame_derks_gym import catalog, defaults, draft
+from cogame_derks_gym.config import GameConfig
+
+from players.client import PlayerError
+from players.derk_player import (DEFAULT_SCRIPTED, PROMPTS, SCRIPTED_NAMES,
+                                 PromptDraftPolicy, ScriptedDraftPolicy,
+                                 brawler_picks, forge_picks, legal_picks,
+                                 resolve_mode, strip_one_fence)
+
+REAL_NAMES = [f"champion-{i}" for i in range(defaults.NUM_SEATS)]
+
+
+def observation(seat=2):
+    cfg = GameConfig.from_dict({
+        "players": [{"name": n} for n in REAL_NAMES],
+        "tokens": [f"t{i}" for i in range(defaults.NUM_SEATS)],
+        "seed": 1,
+    })
+    return draft.draft_observation(seat, cfg)
+
+
+class Transport:
+    """Records request bodies and replays a scripted list of outcomes."""
+
+    def __init__(self, *outcomes):
+        self.outcomes = list(outcomes)
+        self.bodies = []
+
+    async def __call__(self, body):
+        self.bodies.append(body)
+        outcome = self.outcomes.pop(0) if self.outcomes else ""
+        if isinstance(outcome, Exception):
+            raise outcome
+        if outcome == "__hang__":
+            await asyncio.sleep(60)
+        return outcome
+
+
+def policy(*outcomes, prompt="derk-drafter-v1"):
+    return PromptDraftPolicy(prompt, micro=lambda t, rows: [],
+                             api_key="test-key", transport=Transport(*outcomes))
+
+
+# -- parsing -----------------------------------------------------------------
+
+def test_strip_one_fence():
+    assert strip_one_fence('{"a":1}') == '{"a":1}'
+    assert strip_one_fence('```json\n{"a":1}\n```') == '{"a":1}'
+    assert strip_one_fence('```\n{"a":1}\n```') == '{"a":1}'
+    assert strip_one_fence('  {"a":1}  ') == '{"a":1}'
+
+
+def test_legal_picks_accepts_plain_and_fenced_json():
+    obs = observation()
+    body = '{"arm":"arm_cleaver","tail":"tail_plate","misc":"misc_regen",' \
+           '"note":"tanky"}'
+    assert legal_picks(body, obs) == {
+        "arm": "arm_cleaver", "tail": "tail_plate", "misc": "misc_regen",
+        "note": "tanky"}
+    assert legal_picks(f"```json\n{body}\n```", obs)["arm"] == "arm_cleaver"
+
+
+@pytest.mark.parametrize("reply", [
+    "sure! here you go",                       # prose
+    "{broken",                                 # not JSON
+    '["arm_cleaver"]',                         # not an object
+    '{"arm":"arm_nope","tail":"tail_plate","misc":"misc_regen"}',
+    '{"arm":"tail_plate","tail":"tail_plate","misc":"misc_regen"}',
+    '{"arm":"arm_cleaver","tail":"tail_plate"}',
+    '{"arm":1,"tail":"tail_plate","misc":"misc_regen"}',
+])
+def test_legal_picks_rejects(reply):
+    assert legal_picks(reply, observation()) is None
+
+
+# -- the call, the retry, the fallback ---------------------------------------
+
+async def test_valid_reply_is_used_with_one_call():
+    p = policy('{"arm":"arm_blaster","tail":"tail_rotor","misc":"misc_focus"}')
+    picks = await p.on_draft(observation())
+    assert picks == {"arm": "arm_blaster", "tail": "tail_rotor",
+                     "misc": "misc_focus"}
+    assert len(p._transport.bodies) == 1
+    body = p._transport.bodies[0]
+    assert body["model"] == "claude-sonnet-4-5"
+    assert body["max_tokens"] == 400
+    assert "temperature" not in body
+
+
+async def test_fenced_reply_is_accepted():
+    p = policy('```json\n{"arm":"arm_blaster","tail":"tail_rotor",'
+               '"misc":"misc_focus"}\n```')
+    assert (await p.on_draft(observation()))["arm"] == "arm_blaster"
+
+
+async def test_malformed_reply_retries_once_at_temperature_zero():
+    p = policy("no json here",
+               '{"arm":"arm_needler","tail":"tail_plate","misc":"misc_regen"}')
+    picks = await p.on_draft(observation())
+    assert picks["arm"] == "arm_needler"
+    assert len(p._transport.bodies) == 2
+    second = p._transport.bodies[1]
+    assert second["temperature"] == 0
+    assert "Reply with the JSON object only." in second["system"]
+
+
+async def test_two_failures_fall_back_to_the_scripted_rule(capsys):
+    obs = observation(seat=2)  # burst
+    p = policy("nope", "still nope")
+    picks = await p.on_draft(obs)
+    assert picks == forge_picks(obs)
+    assert len(p._transport.bodies) == 2
+    assert "draft_fallback=scripted" in capsys.readouterr().err
+
+
+async def test_timeout_falls_back_without_hanging(monkeypatch):
+    import players.derk_player as derk_player
+
+    monkeypatch.setattr(derk_player, "CALL_TIMEOUT_SECONDS", 0.05)
+    obs = observation(seat=0)
+    p = policy("__hang__", "__hang__")
+    picks = await asyncio.wait_for(p.on_draft(obs), 5)
+    assert picks == forge_picks(obs)
+
+
+async def test_transport_error_falls_back():
+    obs = observation(seat=1)
+    p = policy(IOError("anthropic HTTP 500"), IOError("again"))
+    assert await p.on_draft(obs) == forge_picks(obs)
+
+
+async def test_missing_api_key_makes_no_call_at_all(capsys):
+    obs = observation(seat=1)
+    transport = Transport('{"arm":"arm_cleaver","tail":"tail_plate",'
+                          '"misc":"misc_regen"}')
+    p = PromptDraftPolicy("derk-drafter-v1", micro=lambda t, rows: [],
+                          api_key=None, transport=None)
+    picks = await p.on_draft(obs)
+    assert picks == forge_picks(obs)
+    assert transport.bodies == []
+    assert "ANTHROPIC_API_KEY is not set" in capsys.readouterr().err
+
+
+async def test_request_body_never_contains_a_real_player_name():
+    """Two name spaces: what goes to the model is the alias-only draft
+    observation, minus the deadline."""
+    obs = observation(seat=3)
+    p = policy("nope", "nope")
+    await p.on_draft(obs)
+    for body in p._transport.bodies:
+        blob = json.dumps(body)
+        for name in REAL_NAMES:
+            assert name not in blob
+        user = json.loads(body["messages"][0]["content"])
+        assert "deadline_ms" not in user
+        assert "Cog-Delta" in blob  # the alias IS there
+        assert "arm_cleaver" in blob  # and the catalog
+
+
+def test_the_two_prompts_are_distinct_and_metagamer_extends_drafter():
+    assert set(PROMPTS) == {"derk-drafter-v1", "derk-metagamer-v1"}
+    drafter, metagamer = PROMPTS["derk-drafter-v1"], PROMPTS["derk-metagamer-v1"]
+    assert drafter != metagamer
+    assert "Think about the metagame" in metagamer
+    assert "Think about the metagame" not in drafter
+    for prompt in PROMPTS.values():
+        assert "No prose, no code fences, no markdown." in prompt
+        assert '{"arm":"<id>","tail":"<id>","misc":"<id>"' in prompt
+
+
+# -- the scripted draft rules ------------------------------------------------
+
+def test_forge_table_covers_the_three_seated_roles():
+    for seat, expected in enumerate([
+            {"arm": "arm_blaster", "tail": "tail_plate",
+             "misc": "misc_battery"},
+            {"arm": "arm_needler", "tail": "tail_rotor",
+             "misc": "misc_focus"},
+            {"arm": "arm_blaster", "tail": "tail_stinger",
+             "misc": "misc_battery"}]):
+        assert forge_picks(observation(seat)) == expected
+    # an unknown role falls back to the neutral loadout
+    assert forge_picks({"hero": {"role": "tank"}}) == dict(
+        catalog.NEUTRAL_PICKS)
+
+
+def test_brawler_rule_is_derived_from_the_observed_base_stats():
+    support = observation(0)   # 500 hp, +100 hp/level
+    assassin = observation(1)  # 400 hp, +100 hp/level
+    burst = observation(2)     # 400 hp, +75 hp/level
+    assert brawler_picks(support)["arm"] == "arm_cleaver"
+    assert brawler_picks(assassin)["arm"] == "arm_needler"
+    assert brawler_picks(support)["tail"] == "tail_plate"
+    assert brawler_picks(burst)["tail"] == "tail_rotor"
+    assert brawler_picks(support)["misc"] == "misc_focus"
+    assert brawler_picks(burst)["misc"] == "misc_regen"
+    assert brawler_picks(support)["note"] == "brawl build"
+
+
+@pytest.mark.parametrize("seat", range(defaults.NUM_SEATS))
+@pytest.mark.parametrize("rule", [forge_picks, brawler_picks])
+def test_scripted_draft_rules_are_always_legal(rule, seat):
+    obs = observation(seat)
+    picks = rule(obs)
+    assert catalog.normalized_picks(picks) is not None, picks
+    assert len(draft.truncate_note(picks.get("note"))) <= \
+        catalog.MAX_NOTE_RUNES
+
+
+def test_scripted_rules_are_deterministic():
+    obs = observation(1)
+    assert [forge_picks(obs) for _ in range(5)] == [forge_picks(obs)] * 5
+    assert [brawler_picks(obs) for _ in range(5)] == [brawler_picks(obs)] * 5
+
+
+# -- env switching -----------------------------------------------------------
+
+def test_resolve_mode_defaults_to_puffer_forge():
+    assert resolve_mode({}) == ("scripted", DEFAULT_SCRIPTED)
+    assert DEFAULT_SCRIPTED == "puffer-forge"
+
+
+def test_resolve_mode_prompt_wins_over_scripted(capsys):
+    assert resolve_mode({"PLAYER_PROMPT": "derk-metagamer-v1",
+                         "PLAYER_SCRIPTED": "lane-brawler"}) == \
+        ("prompt", "derk-metagamer-v1")
+    assert "PLAYER_PROMPT wins" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("name", SCRIPTED_NAMES)
+def test_resolve_mode_accepts_every_scripted_name(name):
+    assert resolve_mode({"PLAYER_SCRIPTED": name}) == ("scripted", name)
+
+
+def test_unknown_names_raise_with_the_legal_list():
+    with pytest.raises(PlayerError, match="lane-brawler"):
+        resolve_mode({"PLAYER_SCRIPTED": "typo"})
+    with pytest.raises(PlayerError, match="derk-drafter-v1"):
+        resolve_mode({"PLAYER_PROMPT": "typo"})
+
+
+def test_main_exits_2_on_an_unknown_baseline(monkeypatch, capsys):
+    from players import derk_player
+
+    monkeypatch.setenv("PLAYER_SCRIPTED", "not-a-baseline")
+    assert derk_player.main() == 2
+    err = capsys.readouterr().err
+    assert "unknown PLAYER_SCRIPTED" in err
+    assert "puffer-forge, lane-brawler" in err
+
+
+def test_scripted_policy_rejects_an_unknown_name():
+    with pytest.raises(PlayerError):
+        ScriptedDraftPolicy("nope", micro=lambda t, rows: [])

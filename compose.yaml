@@ -1,0 +1,19 @@
+# Compose services consumed by `uv run coworld build --project .`:
+# service names map to manifest image placeholders ({{GAME_IMAGE}},
+# {{PLAYER_IMAGE}}). Game and players ship in one image (single
+# Dockerfile); the manifest `run` command selects the role entrypoint.
+services:
+  game:
+    image: cogame-derks-gym-game:latest
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
+      network: host
+  player:
+    image: cogame-derks-gym-player:latest
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
+      network: host

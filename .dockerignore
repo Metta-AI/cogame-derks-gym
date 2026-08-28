@@ -1,0 +1,13 @@
+.git
+.venv
+.pytest_cache
+.benchmarks
+build
+dist
+tmp
+viewer/dist
+__pycache__
+**/__pycache__
+*.pyc
+docs
+tests

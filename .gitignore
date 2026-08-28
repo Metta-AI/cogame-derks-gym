@@ -1,0 +1,8 @@
+build/
+dist/
+__pycache__/
+*.pyc
+.venv/
+tmp/
+.pytest_cache/
+viewer/dist/
