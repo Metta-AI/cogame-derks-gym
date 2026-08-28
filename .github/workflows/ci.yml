@@ -360,7 +360,23 @@ jobs:
           python3 tools/ci/test_next_coworld_version.py
           version="${INPUT_VERSION:-}"
           if [ -z "$version" ]; then
-            version=$(python3 tools/ci/next_coworld_version.py derks-gym)
+            # BOOTSTRAP: the picker hard-fails while the registry has no
+            # rows for this coworld at all (it refuses to guess a number
+            # that could re-collide). The FIRST version is published by
+            # coworld-release.yml with an explicit version input; until
+            # then this job warns and skips instead of failing every push.
+            if ! version=$(python3 tools/ci/next_coworld_version.py derks-gym \
+                             2>"${RUNNER_TEMP}/version.err"); then
+              cat "${RUNNER_TEMP}/version.err" >&2
+              if grep -q "no rows for coworld" "${RUNNER_TEMP}/version.err"; then
+                echo "::warning::derks-gym has no registry rows yet; the first" \
+                     " version is published by coworld-release.yml. Skipping the upload."
+                echo "version=" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              exit 1
+            fi
+            cat "${RUNNER_TEMP}/version.err" >&2
           fi
           if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "invalid version '$version' (expected MAJOR.MINOR.PATCH)" >&2
@@ -369,7 +385,7 @@ jobs:
           echo "Uploading as derks-gym $version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Build, certify, and upload
-        if: env.HAVE_SOFTMAX_TOKEN == 'true'
+        if: env.HAVE_SOFTMAX_TOKEN == 'true' && steps.version.outputs.version != ''
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
