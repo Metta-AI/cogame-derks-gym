@@ -1,5 +1,10 @@
 # Porting a PufferLib Ocean env to a Coworld
 
+**Provenance:** this page is `docs/PORTING.md` from the starter this repo was forked from,
+[Metta-AI/cogame-moba](https://github.com/Metta-AI/cogame-moba), with the package and plan paths
+adapted to this repo. The recipe below is the starter's, unchanged; the file:line and path
+examples point at this tree so they can be followed here.
+
 **Who this is for:** a coding agent starting fresh with this repository checked out, tasked with
 turning another PufferLib Ocean environment (or any small C RL env with pretrained policies) into
 a Coworld like this one. You are assumed to be able to read this repo's code and docs, run its
@@ -49,8 +54,8 @@ The pieces you will build, and how they relate (each has a working example in th
 ## The process
 
 Work the stages in order; each has a gate. The repo's own history followed exactly this shape,
-and `docs/plans/` contains the design and implementation plans it was built from — read both
-before starting, then write the equivalents for your env.
+and `docs/plans/` contains the design note it was built from — read it before starting, then
+write the equivalent for your env.
 
 ### Stage 1: Research the env until you can answer these questions
 
@@ -60,7 +65,7 @@ file:line evidence:
 
 1. **Spaces**: exact per-agent obs shape/dtype/layout and action space. Treat encodings as
    opaque byte contracts. Expect quirks (this env has an obs-write stride bug that the
-   pretrained weights were *trained on* — see `docs/plans/2026-08-01-cogame-derks-gym-design.md`).
+   pretrained weights were *trained on* — see `docs/plans/2026-08-28-derks-gym-design.md`).
    **Never fix upstream quirks. Fidelity beats hygiene, always.**
 2. **Config**: which env parameters the training config (`config/<env>.ini` + `binding.c`
    defaults) actually used. Your port must serve those exact values. Watch for flags that
@@ -83,12 +88,13 @@ file:line evidence:
 
 ### Stage 2: Decide, in writing, before building
 
-Write a short design doc (pattern: `docs/plans/2026-08-01-cogame-derks-gym-design.md`) fixing:
+Write a short design doc (pattern: `docs/plans/2026-08-28-derks-gym-design.md`) fixing:
 seat mapping (N agents → how many Coworld seats; offer variants if both per-agent and per-team
 seats make sense), pacing (this repo chose pure lockstep, as-fast-as-possible, browser is
 replay-only — revisit only if the env is human-playable at real-time), repo name/org, and the
 patch list with per-patch rationale. Get the human to confirm the decisions. Then write the
-implementation plan (pattern: `docs/plans/2026-08-01-cogame-derks-gym-implementation.md`).
+implementation plan (this repo folded it into the same document, `docs/plans/`; a separate
+`…-implementation.md` alongside the design doc works just as well).
 
 ### Stage 3: Vendor + patch + fidelity gate (do this before ANY server code)
 
