@@ -63,8 +63,8 @@ class DraftSource(Protocol):
         ``reply`` is the decoded JSON object the seat sent, or None with
         a FALLBACK_CAUSES cause ("disconnected" / "oversize" /
         "wrong_shape"). Raising is allowed: the caller treats it as
-        "wrong_shape". Being slow is allowed: the caller's shared
-        deadline cancels the wait and the seat times out.
+        "wrong_shape". Being slow is allowed: the shared deadline cancels
+        THIS seat's wait and this seat alone times out.
         """
         ...
 
@@ -235,10 +235,21 @@ def neutral_records(cfg: GameConfig) -> list[dict]:
 
 
 async def _one_seat(source: DraftSource, observation: dict,
+                    deadline_at: float, deadline_ms: int,
                     ) -> tuple[object, str | None, int]:
+    """One seat's reply, bounded by the SHARED deadline instant.
+
+    ``deadline_at`` is computed once for the whole batch, so the turn
+    still costs one ``draft_deadline_ms`` of wall clock however many
+    seats stall — but the wait is per seat, so a seat that answered in
+    time keeps its picks when another seat overruns.
+    """
     started = time.monotonic()
     try:
-        reply, cause = await source.get_draft(observation)
+        reply, cause = await asyncio.wait_for(
+            source.get_draft(observation), max(0.0, deadline_at - started))
+    except (asyncio.TimeoutError, TimeoutError):
+        return None, "timeout", deadline_ms
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # a source can never break the draft
@@ -257,25 +268,23 @@ async def run_draft(cfg: GameConfig, sources: list[DraftSource],
     ``asyncio.gather``) under one shared deadline: the turn costs
     ``draft_deadline_ms`` of wall clock no matter how many seats are slow,
     which is what keeps the episode inside 60% of the platform budget.
+
+    The deadline is shared; the RESOLUTION is per seat (the design note's
+    Phase B step 3). Every seat waits on its own ``asyncio.wait_for``
+    against the same deadline instant, so one seat overrunning times out
+    that seat alone — the five that answered legally keep their picks.
     """
     if len(sources) != defaults.NUM_SEATS:
         raise ValueError(
             f"need {defaults.NUM_SEATS} draft sources, got {len(sources)}")
     observations = [draft_observation(seat, cfg)
                     for seat in range(defaults.NUM_SEATS)]
-    deadline = cfg.draft_deadline_ms / 1000.0
+    # ONE deadline instant, computed once, shared by all six waits.
+    deadline_at = time.monotonic() + cfg.draft_deadline_ms / 1000.0
 
-    async def batch():
-        return await asyncio.gather(*(
-            _one_seat(source, observation)
-            for source, observation in zip(sources, observations)))
-
-    started = time.monotonic()
-    try:
-        gathered = await asyncio.wait_for(batch(), deadline)
-    except (asyncio.TimeoutError, TimeoutError):
-        elapsed = int((time.monotonic() - started) * 1000)
-        gathered = [(None, "timeout", elapsed)] * defaults.NUM_SEATS
+    gathered = await asyncio.gather(*(
+        _one_seat(source, observation, deadline_at, cfg.draft_deadline_ms)
+        for source, observation in zip(sources, observations)))
 
     records: list[dict | None] = [None] * defaults.NUM_HEROES
     for seat, (reply, cause, decision_ms) in enumerate(gathered):

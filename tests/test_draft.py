@@ -137,13 +137,21 @@ async def test_illegal_replies_fall_back_to_the_neutral_loadout(bad, cause):
 
 
 async def test_no_reply_by_the_deadline_is_a_timeout():
+    """The deadline is shared, the resolution is PER SEAT: the seat that
+    never answered times out, and every seat that answered legally inside
+    the deadline keeps its picks."""
     sources = [Source(frame(), delay=5.0)] + \
         [Source(frame()) for _ in range(SEATS - 1)]
     records = by_pid(await run(sources, draft_deadline_ms=1000))
-    # the shared deadline cancels the whole batch: every seat that had not
-    # answered yet times out
-    assert records[defaults.SEAT_HERO_PIDS[0]]["fallback_cause"] == "timeout"
-    assert records[defaults.SEAT_HERO_PIDS[0]]["picks"] == NEUTRAL
+    slow = records[defaults.SEAT_HERO_PIDS[0]]
+    assert slow["fallback_cause"] == "timeout"
+    assert slow["fallback"] is True
+    assert slow["picks"] == NEUTRAL
+    for seat in range(1, SEATS):
+        rec = records[defaults.SEAT_HERO_PIDS[seat]]
+        assert rec["fallback_cause"] == "none", f"seat {seat}"
+        assert rec["fallback"] is False, f"seat {seat}"
+        assert rec["picks"] == LEGAL, f"seat {seat}"
 
 
 async def test_disconnected_seat_is_reported_as_disconnected():
