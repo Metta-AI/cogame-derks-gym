@@ -43,6 +43,11 @@ MODEL = "claude-sonnet-4-5"
 MAX_TOKENS = 400
 CALL_TIMEOUT_SECONDS = 20.0
 RETRY_REMINDER = "Reply with the JSON object only."
+# The server's cap on the one free-text field (docs/DRAFT.md); mirrored
+# here so an over-long note is trimmed before it is sent rather than
+# pushing the frame past the 4096-byte drop, which would cost the seat
+# its picks too.
+MAX_NOTE_RUNES = 120
 
 _SYSTEM_BASE = """\
 You are drafting the loadout for one cog in Derk's Gym, a 3v3 MOBA skirmish on the
@@ -165,7 +170,12 @@ def legal_picks(text: str, observation: dict) -> dict | None:
         picks[slot] = value.strip(" ")
     note = payload.get("note")
     if isinstance(note, str) and note:
-        picks["note"] = note
+        # The server truncates to 120 runes on receipt and that stays
+        # authoritative, but a frame larger than 4096 bytes is dropped
+        # BEFORE the JSON parse and costs the seat its picks, not just
+        # its note. Slicing a str slices Unicode scalars, so this can
+        # never split a codepoint.
+        picks["note"] = note[:MAX_NOTE_RUNES]
     return picks
 
 

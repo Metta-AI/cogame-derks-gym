@@ -15,10 +15,11 @@ from cogame_derks_gym import catalog, defaults, draft
 from cogame_derks_gym.config import GameConfig
 
 from players.client import PlayerError
-from players.derk_player import (DEFAULT_SCRIPTED, PROMPTS, SCRIPTED_NAMES,
-                                 PromptDraftPolicy, ScriptedDraftPolicy,
-                                 brawler_picks, forge_picks, legal_picks,
-                                 resolve_mode, strip_one_fence)
+from players.derk_player import (DEFAULT_SCRIPTED, MAX_NOTE_RUNES, PROMPTS,
+                                 SCRIPTED_NAMES, PromptDraftPolicy,
+                                 ScriptedDraftPolicy, brawler_picks,
+                                 forge_picks, legal_picks, resolve_mode,
+                                 strip_one_fence)
 
 REAL_NAMES = [f"champion-{i}" for i in range(defaults.NUM_SEATS)]
 
@@ -84,6 +85,28 @@ def test_legal_picks_accepts_plain_and_fenced_json():
 ])
 def test_legal_picks_rejects(reply):
     assert legal_picks(reply, observation()) is None
+
+
+def test_a_long_note_is_trimmed_before_the_frame_is_sent():
+    """A model that writes an essay must lose its note, never its picks.
+
+    The server drops a >4096-byte frame BEFORE the JSON parse, so an
+    unbounded note would cost the seat its whole draft. The player trims
+    to the server's own rune cap on the way out; the server's truncation
+    on receipt stays authoritative.
+    """
+    assert MAX_NOTE_RUNES == catalog.MAX_NOTE_RUNES
+    rocket = "\U0001F680"
+    reply = json.dumps({"arm": "arm_cleaver", "tail": "tail_plate",
+                        "misc": "misc_regen", "note": rocket * 3000})
+    picks = legal_picks(reply, observation())
+    assert picks["arm"] == "arm_cleaver"          # the picks survive
+    assert picks["note"] == rocket * MAX_NOTE_RUNES
+    picks["note"].encode("utf-8", "strict")       # never a split codepoint
+    frame = json.dumps({"phase": "draft", "picks": [picks]})
+    assert len(frame.encode("utf-8")) <= catalog.MAX_DRAFT_FRAME_BYTES
+    # and the server keeps it whole: nothing left to truncate
+    assert draft.truncate_note(picks["note"]) == picks["note"]
 
 
 # -- the call, the retry, the fallback ---------------------------------------
