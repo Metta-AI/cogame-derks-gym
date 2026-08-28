@@ -9,6 +9,7 @@ temperature 0 and its fall-back to the scripted draft rule.
 import asyncio
 import json
 import time
+from pathlib import Path
 
 import pytest
 
@@ -18,13 +19,15 @@ from cogame_derks_gym.config import GameConfig
 from players.client import PlayerError
 from players.derk_player import (CALL_TIMEOUT_SECONDS,
                                  DEADLINE_SAFETY_SECONDS, DEFAULT_SCRIPTED,
-                                 MAX_NOTE_RUNES, PROMPTS, SCRIPTED_NAMES,
+                                 FALLBACK_REASONS, MAX_NOTE_RUNES, PROMPTS,
+                                 SCRIPTED_NAMES,
                                  PromptDraftPolicy, ScriptedDraftPolicy,
                                  brawler_picks, call_timeout,
                                  first_json_object, forge_picks, legal_picks,
                                  resolve_mode, strip_one_fence)
 
 REAL_NAMES = [f"champion-{i}" for i in range(defaults.NUM_SEATS)]
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def observation(seat=2):
@@ -280,6 +283,78 @@ async def test_missing_api_key_makes_no_call_at_all(capsys):
     assert picks == forge_picks(obs)
     assert transport.bodies == []
     assert "ANTHROPIC_API_KEY is not set" in capsys.readouterr().err
+
+
+# -- the fallback log line: one shape, one closed vocabulary -----------------
+
+async def _fallback_reason(capsys, monkeypatch, kind):
+    """Drive on_draft into each fallback and return the logged reason."""
+    obs = observation(seat=2)
+    if kind == "no_key":
+        p = PromptDraftPolicy("derk-drafter-v1", micro=lambda t, rows: [],
+                              api_key=None, transport=None)
+    elif kind == "no_time":
+        obs = dict(obs, deadline_ms=1000)
+        p = policy("unused")
+    elif kind == "timeout":
+        import players.derk_player as derk_player
+        monkeypatch.setattr(derk_player, "CALL_TIMEOUT_SECONDS", 0.05)
+        p = policy("__hang__", "__hang__")
+    elif kind == "parse":
+        p = policy("sure! here you go", "{broken")
+    elif kind == "illegal":
+        body = ('{"arm":"arm_nope","tail":"tail_plate","misc":"misc_regen"}')
+        p = policy(f"here you go: {body}", body)
+    elif kind == "transport":
+        p = policy(IOError("anthropic HTTP 500"), OSError("connection reset"))
+    assert await p.on_draft(obs) == forge_picks(obs)
+    err = capsys.readouterr().err
+    lines = [ln for ln in err.splitlines()
+             if ln.startswith("draft_fallback=scripted ")]
+    assert len(lines) == 1, err
+    return lines[0]
+
+
+@pytest.mark.parametrize("kind", FALLBACK_REASONS)
+async def test_every_fallback_logs_its_own_reason(capsys, monkeypatch, kind):
+    """docs/DRAFT.md pins this line as the ONLY record of a player-side
+    LLM -> scripted fallback (the reply the player sends is legal, so the
+    server records fallback: false). One shape, one closed vocabulary,
+    one reason per cause."""
+    line = await _fallback_reason(capsys, monkeypatch, kind)
+    assert line.startswith(f"draft_fallback=scripted reason={kind} picks=")
+
+
+def test_the_fallback_vocabulary_is_closed_and_documented():
+    assert FALLBACK_REASONS == ("no_key", "no_time", "timeout", "parse",
+                                "illegal", "transport")
+    drafted = (REPO_ROOT / "docs" / "DRAFT.md").read_text()
+    for reason in FALLBACK_REASONS:
+        assert f"`{reason}`" in drafted, reason
+    # and the doc says which record phase 60 must count
+    assert "draft_fallback=scripted" in drafted
+    assert "results.draft_fallbacks" in drafted
+
+
+async def test_a_broken_object_is_parse_not_illegal(capsys, monkeypatch):
+    """The reviewer's mislabel: the old rule was "contains a '{' ->
+    illegal", so a reply whose object never parsed was reported as an
+    illegal pick. It is a parse failure."""
+    p = policy("{broken", '{"arm":')
+    obs = observation(seat=2)
+    assert await p.on_draft(obs) == forge_picks(obs)
+    assert "draft_fallback=scripted reason=parse" in capsys.readouterr().err
+
+
+async def test_a_prose_wrapped_legal_reply_never_reaches_the_fallback(capsys):
+    """The other half: prose around a legal object is now accepted, so it
+    is neither `parse` nor `illegal` — it is a draft."""
+    body = ('{"arm":"arm_cleaver","tail":"tail_plate","misc":"misc_regen"}')
+    p = policy(f"Here is my draft: {body}")
+    assert (await p.on_draft(observation(seat=2)))["arm"] == "arm_cleaver"
+    err = capsys.readouterr().err
+    assert "draft_fallback=scripted" not in err
+    assert "attempt=1" in err
 
 
 async def test_request_body_never_contains_a_real_player_name():

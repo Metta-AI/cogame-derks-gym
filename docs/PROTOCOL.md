@@ -95,6 +95,15 @@ unknown_item / accepted) and the full catalog with its deltas and clamps are
 in [DRAFT.md](DRAFT.md). Every failure resolves to the neutral loadout for
 that seat: a draft failure is never fatal and adds no `end_reason`.
 
+The reply schema above is **closed**: `arm`/`tail`/`misc`/`note` and nothing
+else. A `PLAYER_PROMPT` champion whose model fails therefore sends its
+scripted rule's (legal) pick, and the server records `fallback: false` for
+it — `fallback_cause` and `results.draft_fallbacks` mean *server-side*
+substitution only. The player-side LLM → scripted fallback is recorded in
+the player's own stderr as `draft_fallback=scripted reason=…`; see
+[DRAFT.md](DRAFT.md) §"Two kinds of fallback" for the closed reason
+vocabulary and which record to count.
+
 Afterwards the server pushes `{"phase": "draft_result", "loadouts": [...]}`
 — the ten draft-reveal records, **alias-only** — to every seat and to the
 `/global` feed. No reply is expected.

@@ -158,6 +158,47 @@ House heroes (pids 3, 4, 8, 9) always get the neutral loadout with
 A draft failure is **never fatal**: `end_reason` stays the same closed
 four-value enum and the match starts on time on the neutral loadout.
 
+## Two kinds of fallback (and where each one is counted)
+
+These are different events with different records. Do not read one for the
+other.
+
+**Server-side substitution** — the table above. The server could not use
+what the seat sent (or the seat sent nothing), so it substituted the
+neutral loadout. Recorded in the replay header's draft record and in
+`results.json`: `fallback: true`, `fallback_cause: <one of the six>`, and
+`results.draft_fallbacks[seat] = true`. **`results.draft_fallbacks` counts
+exactly this and nothing else.**
+
+**Player-side LLM → scripted fallback** — inside a `PLAYER_PROMPT`
+champion (`players/derk_player.py`). The model did not answer usefully, so
+the player sends its *scripted* draft rule's pick instead. That pick is
+legal, so the server accepts it: `fallback: false`, `fallback_cause:
+"none"`, `draft_fallbacks[seat] = false`. The protocol's reply schema is
+closed (`arm`/`tail`/`misc`/`note` only) and is deliberately **not**
+widened for this, so the record is the player's own stderr line:
+
+```
+draft_fallback=scripted reason=<reason> picks={...}
+```
+
+with `reason` from this closed set (`derk_player.FALLBACK_REASONS`):
+
+| reason | meaning |
+|---|---|
+| `no_key` | `ANTHROPIC_API_KEY` unset — no call was made at all |
+| `no_time` | the observation's `deadline_ms` left less than 1 s for a call, so none was made (`derk_player.call_timeout`) |
+| `timeout` | a call did not answer inside its budget (min of 20 s and what is left of `deadline_ms`) |
+| `parse` | the reply contained no extractable JSON object |
+| `illegal` | an object was extracted, but a slot's id was not in this seat's catalog |
+| `transport` | HTTP/network failure (the exception type is logged on its own line) |
+
+A successful model draft logs `draft=<prompt name> attempt=<1\|2>
+picks={...}` instead, and never the `draft_fallback=` line. So:
+**count LLM usage from the player logs — `draft_fallback=scripted
+reason=…` per champion container — not from `results.draft_fallbacks`,
+which is the server-side number.**
+
 ## Closed contract
 
 `server/cogame_derks_gym/catalog.py`, the manifest `config_schema`

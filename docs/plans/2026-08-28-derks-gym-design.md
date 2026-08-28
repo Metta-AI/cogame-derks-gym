@@ -336,6 +336,19 @@ only.` → on second failure, `puffer-forge`'s draft rule, logged as
 all, straight to the scripted rule, logged once. The 20 s + 20 s worst case fits inside the server's
 45 s draft deadline, so a doubly-failing champion still submits a legal loadout.
 
+> **Editor's note (r2 fixes F2–F5).** Refined in the code:
+> * the fallback log line's reason vocabulary is the closed six-value set
+>   `no_key|no_time|timeout|parse|illegal|transport`
+>   (`derk_player.FALLBACK_REASONS`; `docs/DRAFT.md` §"Two kinds of fallback" is
+>   authoritative). `transport` no longer carries the exception type in the token — that detail
+>   is logged on its own line;
+> * each call's timeout is additionally capped by what is left of the server's `deadline_ms`
+>   (`derk_player.call_timeout`), because the certification fixture drafts under a 5 s deadline
+>   where a 20 + 20 s budget would simply be substituted away;
+> * the arithmetic above also had to account for the repo's own 20 s player-websocket heartbeat,
+>   not just the 45 s draft deadline: the decision now runs off the websocket read loop
+>   (`players/client.py`), so ping/pong keeps flowing while the model thinks.
+
 **Micro layer for both prompts:** `MobaBrain` on `build/moba_brain.wasm` — the vendored pretrained
 network, brain instance 0 for the seat's single hero, seeded by `COGAME_PLAYER_SEED` (default 1).
 Byte-identical to the starter's `BaselinePolicy`.

@@ -55,6 +55,15 @@ CALL_TIMEOUT_SECONDS = 20.0
 DEADLINE_SAFETY_SECONDS = 1.5
 MIN_CALL_SECONDS = 1.0
 RETRY_REMINDER = "Reply with the JSON object only."
+# The CLOSED vocabulary of the player-side fallback log line
+#     draft_fallback=scripted reason=<one of these> picks={...}
+# on stderr. This line is the ONLY record of an LLM->scripted fallback:
+# the reply the player then sends is a legal scripted pick, so the
+# server records fallback: false and results.draft_fallbacks counts
+# server-side neutral substitutions only (docs/DRAFT.md, "Two kinds of
+# fallback"). Phase 60 counts LLM usage from player logs, not results.
+FALLBACK_REASONS = ("no_key", "no_time", "timeout", "parse", "illegal",
+                    "transport")
 # The server's cap on the one free-text field (docs/DRAFT.md); mirrored
 # here so an over-long note is trimmed before it is sent rather than
 # pushing the frame past the 4096-byte drop, which would cost the seat
@@ -296,12 +305,20 @@ class PromptDraftPolicy:
         self._transport = transport
         self.last_request: dict | None = None
 
+    def _scripted_fallback(self, observation: dict, reason: str) -> dict:
+        """The one place a player-side fallback is recorded, so the log
+        line phase 60 counts has exactly one shape and one vocabulary."""
+        assert reason in FALLBACK_REASONS, reason
+        picks = self._fallback(observation)
+        print(f"draft_fallback=scripted reason={reason} picks={picks}",
+              file=sys.stderr)
+        return picks
+
     async def on_draft(self, observation: dict) -> dict:
         if not self._api_key and self._transport is None:
-            print("ANTHROPIC_API_KEY is not set: no LLM call, using the "
-                  "scripted draft rule (draft_fallback=scripted "
-                  "reason=no_key)", file=sys.stderr)
-            return self._fallback(observation)
+            print("ANTHROPIC_API_KEY is not set: no LLM call at all",
+                  file=sys.stderr)
+            return self._scripted_fallback(observation, "no_key")
         user = _prompt_payload(observation)
         started = time.monotonic()
         reason = "no_time"
@@ -321,7 +338,10 @@ class PromptDraftPolicy:
                 reason = "timeout"
                 text = None
             except Exception as exc:
-                reason = f"transport:{type(exc).__name__}"
+                reason = "transport"
+                print(f"draft={self.prompt_name} attempt={attempt} "
+                      f"transport error: {type(exc).__name__}: {exc}",
+                      file=sys.stderr)
                 text = None
             else:
                 picks = legal_picks(text, observation)
@@ -329,15 +349,18 @@ class PromptDraftPolicy:
                     print(f"draft={self.prompt_name} attempt={attempt} "
                           f"picks={picks}", file=sys.stderr)
                     return picks
-                reason = "parse" if "{" not in (text or "") else "illegal"
+                # "parse": no JSON object could be extracted at all;
+                # "illegal": an object was extracted, its ids were not
+                # this seat's catalog. A prose-wrapped object is now
+                # parsed (F1), so it can only be illegal on its ids.
+                reason = ("illegal"
+                          if first_json_object(text or "") is not None
+                          else "parse")
             if attempt == 1:
                 print(f"draft={self.prompt_name} attempt 1 failed "
                       f"({reason}); will retry once at temperature 0",
                       file=sys.stderr)
-        picks = self._fallback(observation)
-        print(f"draft_fallback=scripted reason={reason} picks={picks}",
-              file=sys.stderr)
-        return picks
+        return self._scripted_fallback(observation, reason)
 
     async def _call(self, user: str, *, reminder: bool) -> str:
         body = {
