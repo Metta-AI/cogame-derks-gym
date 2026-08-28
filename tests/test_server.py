@@ -33,6 +33,9 @@ def make_config(**overrides):
         # The floor the config schema allows: a test client that does not
         # answer the draft turn should cost one second, not 45.
         "draft_deadline_ms": 1000,
+        # Generous by default so no test trips the engine's hard stop by
+        # accident; the wall-clock test sets its own.
+        "wall_clock_budget_seconds": 120,
     }
     d.update(overrides)
     return GameConfig.from_dict(d)
@@ -69,6 +72,27 @@ class ServerHarness:
     def ws_url(self, slot, token):
         return str(self.test_server.make_url(
             f"/player?slot={slot}&token={token}"))
+
+
+# Every hand-written client below answers the single draft turn the same
+# way; a client that ignored it would spend the shared draft deadline
+# before every episode.
+DRAFT_REPLY = json.dumps({
+    "phase": "draft",
+    "picks": [{"arm": "arm_blaster", "tail": "tail_plate",
+               "misc": "misc_battery"}]})
+
+
+async def handle_phase(ws, data, *, answer=True) -> bool:
+    """True when `data` was a phase message (draft / draft_result / an
+    unrecognised phase), in which case the caller must not treat it as a
+    per-tick message."""
+    phase = data.get("phase")
+    if phase is None:
+        return False
+    if phase == "draft" and answer:
+        await ws.send_str(DRAFT_REPLY)
+    return True
 
 
 async def play_random_client(harness, slot, token, heroes=1,
@@ -254,8 +278,8 @@ async def test_malformed_messages_never_crash_episode(tmp_path):
                     data = json.loads(msg.data)
                     if data.get("done"):
                         return data["result"]
-                    if data.get("phase") is not None:
-                        continue  # the draft turn: this client never drafts
+                    if await handle_phase(ws, data, answer=False):
+                        continue  # this client never drafts either
                     try:
                         await ws.send_str(next(garbage))
                     except StopIteration:
@@ -292,7 +316,7 @@ async def test_results_report_noop_causes(tmp_path):
                     data = json.loads(msg.data)
                     if data.get("done"):
                         return data["result"]
-                    if data.get("phase") is not None:
+                    if await handle_phase(ws, data, answer=False):
                         continue
                     await ws.send_str(json.dumps({
                         "tick": data["tick"] + 1000,
@@ -340,7 +364,7 @@ async def test_dead_seat_disconnect_during_probe_then_reconnect_revives(
                     data = json.loads(msg.data)
                     if data.get("done"):
                         return data["result"]
-                    if data.get("phase") is not None:
+                    if await handle_phase(ws, data):
                         continue
                     await asyncio.sleep(0.025)
                     acts = rng.integers(0, defaults.ACT_HIGH,
@@ -367,6 +391,9 @@ async def test_dead_seat_disconnect_during_probe_then_reconnect_revives(
                         break  # probe parked: nothing more will arrive
                     if msg.type != WSMsgType.TEXT:
                         break
+                    # answer the draft (this seat's failure is about
+                    # TICKS), then go silent
+                    await handle_phase(ws, json.loads(msg.data))
                 await ws.close()  # drop with the probe still parked
             # Phase 2: reconnect and play properly; must revive the seat.
             return await play_random_client(
@@ -400,7 +427,7 @@ async def test_strike_death_force_closes_stale_socket_then_revive(tmp_path):
                     data = json.loads(msg.data)
                     if data.get("done"):
                         return data["result"]
-                    if data.get("phase") is not None:
+                    if await handle_phase(ws, data):
                         continue
                     await asyncio.sleep(0.025)
                     acts = rng.integers(0, defaults.ACT_HIGH,
@@ -423,6 +450,7 @@ async def test_strike_death_force_closes_stale_socket_then_revive(tmp_path):
                     msg = await ws.receive()  # no timeout: server closes
                     if msg.type != WSMsgType.TEXT:
                         break
+                    await handle_phase(ws, json.loads(msg.data))
             # Reconnect and play properly; must revive the seat.
             return await play_random_client(
                 h, SEATS - 1, f"token-{SEATS - 1}")
@@ -452,7 +480,7 @@ async def test_wall_clock_budget_writes_artifacts(tmp_path):
                     data = json.loads(msg.data)
                     if data.get("done"):
                         return data["result"]
-                    if data.get("phase") is not None:
+                    if await handle_phase(ws, data):
                         continue
                     await asyncio.sleep(0.02)
                     acts = rng.integers(0, defaults.ACT_HIGH,
@@ -964,7 +992,8 @@ async def test_unresponsive_client_never_blocks_episode_exit(tmp_path):
     """A connected client that never reads or replies must not prevent
     run_episode from returning (bounded done-broadcast, strike rule)."""
     cfg = make_config(max_ticks=5, tick_deadline_ms=100,
-                      player_connect_timeout_seconds=2)
+                      player_connect_timeout_seconds=2,
+                      wall_clock_budget_seconds=60)
     async with ServerHarness(cfg, tmp_path) as h:
         async with aiohttp.ClientSession() as session:
             silent_ws = await session.ws_connect(

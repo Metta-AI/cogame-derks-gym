@@ -484,9 +484,23 @@ function derkDismissEndcard() {
 
 function derkRelayout() {
   const controls = derkEl("controls");
-  const height = controls ? controls.getBoundingClientRect().height : 40;
+  const box = controls ? controls.getBoundingClientRect() : null;
+  const height = box ? box.height : 40;
+  // --band is the space a fixed overlay must leave free at the BOTTOM of
+  // the viewport so that the transport is never covered. On a desktop
+  // page the controls sit at the bottom of the viewport and this is just
+  // their height + 8 (48px on one row, 84px on two). On a narrow, tall
+  // page they sit mid-viewport, so the band grows to reach them —
+  // otherwise `inset: 0 0 var(--band) 0` would lie over the scrubber.
+  // Capped at 70% of the viewport so an overlay never collapses to
+  // nothing when the page is scrolled far down.
+  let band = Math.round(height + 8);
+  if (box) {
+    band = Math.max(band, Math.round(window.innerHeight - box.top + 8));
+    band = Math.min(band, Math.round(window.innerHeight * 0.7));
+  }
   const root = document.documentElement;
-  root.style.setProperty("--band", Math.round(height + 8) + "px");
+  root.style.setProperty("--band", band + "px");
   const scale = Math.min(1, Math.max(0.8, window.innerWidth / 1100));
   root.style.setProperty("--hudscale", String(scale));
   derkLayoutBeats();
@@ -494,6 +508,9 @@ function derkRelayout() {
 
 window.addEventListener("load", derkRelayout);
 window.addEventListener("resize", derkRelayout);
+// The transport moves under a fixed overlay when the page scrolls, so the
+// band has to be re-measured (passive: never blocks scrolling).
+window.addEventListener("scroll", derkRelayout, {passive: true});
 
 /* -- per-frame readouts --------------------------------------------- */
 
