@@ -335,13 +335,14 @@ fi
 # server.py's _results_doc and the manifest results_schema must list exactly
 # the same keys, and tests/test_manifest.py asserts all three agree.
 # --------------------------------------------------------------------------
-if ! python3 - "${work_dir}" "${seats}" <<'DERKPY'
+if ! python3 - "${work_dir}" "${seats}" "${manifest}" <<'DERKPY'
 import json
 import sys
 from pathlib import Path
 
 work = Path(sys.argv[1])
 seats = int(sys.argv[2])
+manifest = json.loads(Path(sys.argv[3]).read_text())
 results = json.loads((work / "results.json").read_text())
 
 expected = {
@@ -376,6 +377,62 @@ assert house_pids == [3, 4, 8, 9], house_pids
 for pid in seat_pids:
     assert by_pid[pid]["fallback"] is False, by_pid[pid]
     assert by_pid[pid]["fallback_cause"] == "none", by_pid[pid]
+
+# The certification fixture seats EVERY declared player at least once (a
+# fixture of one player x N fails hosted certification with
+# players_missing the moment the manifest declares other runnables), so
+# this episode really did run several different policies. Each scripted
+# rule is deterministic from the hero's role, so the picks it produced are
+# re-derived here rather than assumed: a seat that silently played some
+# other policy (or no policy) shows up as a mismatch.
+declared = {entry["id"]: entry for entry in (manifest.get("player") or [])}
+cert_ids = [entry.get("player_id")
+            for entry in manifest["certification"]["players"]]
+assert set(cert_ids) == set(declared), (
+    "every declared player must occupy a certification slot: "
+    f"declared={sorted(declared)} seated={sorted(set(cert_ids))}")
+
+# players/derk_player.py FORGE_BY_ROLE, and the lane-brawler rule
+# evaluated on each role's upstream base stats (support 500hp/+100,
+# assassin 400/+100, burst 400/+75).
+FORGE = {
+    "support": {"arm": "arm_blaster", "tail": "tail_plate",
+                "misc": "misc_battery"},
+    "assassin": {"arm": "arm_needler", "tail": "tail_rotor",
+                 "misc": "misc_focus"},
+    "burst": {"arm": "arm_blaster", "tail": "tail_stinger",
+              "misc": "misc_battery"},
+}
+BRAWLER = {
+    "support": {"arm": "arm_cleaver", "tail": "tail_plate",
+                "misc": "misc_focus"},
+    "assassin": {"arm": "arm_needler", "tail": "tail_plate",
+                 "misc": "misc_regen"},
+    "burst": {"arm": "arm_needler", "tail": "tail_rotor",
+              "misc": "misc_regen"},
+}
+distinct = set()
+for slot, pid in enumerate(seat_pids):
+    env = (declared.get(cert_ids[slot]) or {}).get("env") or {}
+    record = by_pid[pid]
+    role = record["role"]
+    distinct.add(tuple(sorted(record["picks"].items())))
+    scripted = env.get("PLAYER_SCRIPTED")
+    if scripted == "puffer-forge":
+        assert record["picks"] == FORGE[role], (slot, pid, record)
+    elif scripted == "lane-brawler":
+        assert record["picks"] == BRAWLER[role], (slot, pid, record)
+        assert record["note"] == "brawl build", record
+    else:
+        # a PLAYER_PROMPT seat: with no API key it uses puffer-forge's
+        # rule, with one it drafts for itself - either way the picks must
+        # be legal ids of the matching slot, which the server enforced
+        # (fallback False above).
+        assert env.get("PLAYER_PROMPT"), (slot, cert_ids[slot], env)
+assert len(distinct) >= 2, (
+    "every seat drafted the same loadout: the mixed certification fixture "
+    "did not actually run different policies")
+
 for pid in house_pids:
     assert by_pid[pid]["player_name"] is None, by_pid[pid]
     assert by_pid[pid]["picks"] == {

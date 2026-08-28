@@ -244,7 +244,36 @@ def test_players_are_one_image_env_switched():
         assert entry["resources"]["limits"]["cpu"] in ("1", "2")
     assert entries["baseline"]["env"] == {"PLAYER_SCRIPTED": "puffer-forge"}
     assert entries["lane-brawler"]["env"] == {"PLAYER_SCRIPTED": "lane-brawler"}
-    assert entries["drafter"]["env"] == {"PLAYER_PROMPT": "derk-drafter-v1"}
+    assert entries["drafter"]["env"] == {
+        "PLAYER_PROMPT": "derk-drafter-v1",
+        "ANTHROPIC_API_KEY_URI": "secret://coworld/derks-gym/anthropic_api_key"}
+
+
+def test_every_declared_player_has_a_certification_slot():
+    """Hosted certification fails `players_missing` the moment the
+    manifest declares a runnable the fixture never seats (raid 0.1.2 ->
+    0.1.3, 2026-08-23). The strong baseline keeps the seats that decide
+    the fixture's outcome; the other two are seated once each."""
+    declared = {entry["id"] for entry in MANIFEST["player"]}
+    seated = [entry["player_id"]
+              for entry in MANIFEST["certification"]["players"]]
+    assert set(seated) == declared, sorted(declared ^ set(seated))
+    assert seated.count("baseline") >= len(seated) - 2
+
+
+def test_llm_runnables_ask_for_the_coworld_secret_by_uri():
+    """Without ANTHROPIC_API_KEY_URI the hosted player pod never receives
+    the secret and the champion silently plays its scripted draft rule
+    (hive, 2026-08-23). The namespace is game.name, not the repo slug."""
+    expected = f"secret://coworld/{MANIFEST['game']['name']}/anthropic_api_key"
+    prompt_entries = [entry for entry in MANIFEST["player"]
+                      if "PLAYER_PROMPT" in (entry.get("env") or {})]
+    assert prompt_entries
+    for entry in prompt_entries:
+        assert entry["env"].get("ANTHROPIC_API_KEY_URI") == expected, entry
+    for row in POLICIES:
+        if "PLAYER_PROMPT" in row["env"]:
+            assert row["env"].get("ANTHROPIC_API_KEY_URI") == expected, row
 
 
 def test_policies_json_has_two_prompt_champions_and_two_baselines():
