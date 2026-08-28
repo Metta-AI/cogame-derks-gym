@@ -130,8 +130,8 @@ SCRIPTED_DRAFTS = {
 # -- reply parsing ----------------------------------------------------------
 
 def strip_one_fence(text: str) -> str:
-    """Strip ONE leading/trailing code fence — the single documented
-    tolerance, so it is testable."""
+    """Strip ONE leading/trailing code fence (kept as the cheap,
+    exactly-specified normalisation before the object scan)."""
     stripped = text.strip()
     if not stripped.startswith("```"):
         return stripped
@@ -144,18 +144,46 @@ def strip_one_fence(text: str) -> str:
     return body.strip()
 
 
+def first_json_object(text: str) -> dict | None:
+    """The FIRST balanced JSON object anywhere in ``text``, or None.
+
+    Tolerant parsing: a model that wraps its answer in prose ("Here is my
+    draft: {...}"), signs off after a code fence, or answers with a
+    one-element list still gets its draft counted.
+    ``json.JSONDecoder.raw_decode`` parses one value starting at a
+    candidate ``{`` and stops at its end, so nesting, strings and escapes
+    are handled by the JSON parser itself instead of a brace counter, and
+    trailing prose is simply ignored.
+
+    Two documented choices, so the behaviour is testable:
+    * two objects in one reply -> the FIRST one that parses wins (a model
+      that offers alternatives gets its first answer, never a merge);
+    * an object inside an array (``[{...}]``) is accepted — the object is
+      found at its own ``{``.
+    """
+    decoder = json.JSONDecoder()
+    for start, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(text, start)
+        except ValueError:
+            continue
+        if isinstance(value, dict):
+            return value
+    return None
+
+
 def legal_picks(text: str, observation: dict) -> dict | None:
     """Parse one reply into legal picks, or None.
 
     Exactly the legality check the server applies, against the catalog
-    the seat was actually given: one JSON object, one id per slot, each
-    an id of the MATCHING slot.
+    the seat was actually given: one JSON object (extracted from whatever
+    prose or fence surrounds it), one id per slot, each an id of the
+    MATCHING slot.
     """
-    try:
-        payload = json.loads(strip_one_fence(text))
-    except (json.JSONDecodeError, ValueError):
-        return None
-    if not isinstance(payload, dict):
+    payload = first_json_object(strip_one_fence(text))
+    if payload is None:
         return None
     cat = observation.get("catalog") or {}
     picks: dict[str, str] = {}

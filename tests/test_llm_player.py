@@ -18,8 +18,8 @@ from players.client import PlayerError
 from players.derk_player import (DEFAULT_SCRIPTED, MAX_NOTE_RUNES, PROMPTS,
                                  SCRIPTED_NAMES, PromptDraftPolicy,
                                  ScriptedDraftPolicy, brawler_picks,
-                                 forge_picks, legal_picks, resolve_mode,
-                                 strip_one_fence)
+                                 first_json_object, forge_picks, legal_picks,
+                                 resolve_mode, strip_one_fence)
 
 REAL_NAMES = [f"champion-{i}" for i in range(defaults.NUM_SEATS)]
 
@@ -85,6 +85,52 @@ def test_legal_picks_accepts_plain_and_fenced_json():
 ])
 def test_legal_picks_rejects(reply):
     assert legal_picks(reply, observation()) is None
+
+
+LEGAL_BODY = ('{"arm":"arm_cleaver","tail":"tail_plate","misc":"misc_regen",'
+              '"note":"tanky"}')
+
+
+@pytest.mark.parametrize("reply", [
+    f"Here is my draft: {LEGAL_BODY}",                  # prose before
+    f"{LEGAL_BODY}\nHope that helps!",                  # prose after
+    f"Sure!\n{LEGAL_BODY}\nDone.",                      # prose both sides
+    f"Here you go:\n```json\n{LEGAL_BODY}\n```",        # prose + fence
+    f"```json\n{LEGAL_BODY}\n```\nlet me know!",        # fence + trailing prose
+    f"[{LEGAL_BODY}]",                                  # object inside an array
+])
+def test_legal_picks_extracts_the_object_from_surrounding_prose(reply):
+    """Checklist item 8: parsing accepts surrounding prose and extracts
+    the JSON object."""
+    assert legal_picks(reply, observation()) == {
+        "arm": "arm_cleaver", "tail": "tail_plate", "misc": "misc_regen",
+        "note": "tanky"}
+
+
+def test_two_objects_in_one_reply_the_first_balanced_one_wins():
+    """Documented behaviour: a model that offers alternatives gets its
+    first answer counted, never a merge of the two."""
+    second = '{"arm":"arm_needler","tail":"tail_rotor","misc":"misc_focus"}'
+    picks = legal_picks(f"maybe {LEGAL_BODY} or {second}?", observation())
+    assert picks["arm"] == "arm_cleaver"
+    assert first_json_object(f"maybe {LEGAL_BODY} or {second}?")["arm"] == \
+        "arm_cleaver"
+
+
+def test_extraction_is_not_confused_by_braces_inside_a_string():
+    """The JSON parser, not a brace counter, decides where the object
+    ends — so braces inside the note cannot truncate it."""
+    body = json.dumps({"arm": "arm_cleaver", "tail": "tail_plate",
+                       "misc": "misc_regen", "note": "} not the end {"})
+    picks = legal_picks(f"draft: {body} — good luck!", observation())
+    assert picks == {"arm": "arm_cleaver", "tail": "tail_plate",
+                     "misc": "misc_regen", "note": "} not the end {"}
+
+
+def test_first_json_object_returns_none_when_there_is_no_object():
+    assert first_json_object("sure! here you go") is None
+    assert first_json_object("{broken") is None
+    assert first_json_object('["arm_cleaver"]') is None
 
 
 def test_a_long_note_is_trimmed_before_the_frame_is_sent():

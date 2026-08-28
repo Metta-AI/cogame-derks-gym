@@ -323,6 +323,12 @@ Parsing: the reply must be exactly one JSON object (a single leading/trailing co
 stripped before parsing — one tolerance, stated, so it is testable). Then the same legality check
 the server applies.
 
+> **Editor's note (r2 fix F1).** Superseded in the code: parsing is now *tolerant* as the review
+> checklist requires — one code fence is still stripped, and then the **first balanced JSON object
+> found anywhere in the reply** is extracted (prose on either side is ignored, two objects → the
+> first wins, `[{...}]` is accepted). See `players.derk_player.first_json_object`. The legality
+> check that follows is unchanged.
+
 **Degrade, never hang (player side):** timeout, transport error, non-JSON, or an id outside the
 catalog → **one retry** with `temperature: 0` and the reminder line `Reply with the JSON object
 only.` → on second failure, `puffer-forge`'s draft rule, logged as
