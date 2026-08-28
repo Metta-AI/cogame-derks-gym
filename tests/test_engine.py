@@ -831,3 +831,28 @@ async def test_event_log_caps_at_400_dropping_level_spikes_first():
     assert "first_blood" in kinds
     assert kinds[-1] == "end"
     assert kinds.count("kill") == 10
+
+
+def test_an_undroppable_event_is_never_dropped_even_over_the_cap():
+    """The cap yields to the never-dropped kinds, in that order.
+
+    A log already full of undroppable records has nothing left to shed,
+    so add_end() must still append the `end` record and keep it. The
+    trim's last-resort branch used to delete the tail here, i.e. the
+    record it had just added.
+    """
+    from cogame_derks_gym.events import MAX_EVENTS, EventLog
+
+    log = EventLog()
+    log.add_draft()
+    log.add(1, "first_blood", pid=0, victim_pid=5)
+    for tick in range(2, 2 + MAX_EVENTS):        # all undroppable
+        log.add(tick, "tower", pid=0, team=0)
+    log.add(3000, "ancient", team=0)
+    log.add_end(3001, "ancient")
+    kinds = [e["kind"] for e in log.events()]
+    assert kinds[0] == "draft"
+    assert kinds[-1] == "end", "the just-added end record was dropped"
+    assert kinds[-2] == "ancient"
+    assert "first_blood" in kinds
+    assert kinds.count("tower") == MAX_EVENTS

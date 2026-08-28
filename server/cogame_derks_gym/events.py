@@ -62,9 +62,14 @@ class EventLog:
                     del self._events[index]
                     break
             else:
-                # Nothing droppable left: keep the undroppable history and
-                # stop growing rather than lose an ancient/end record.
-                del self._events[self._max:]
+                # Nothing droppable left. draft/first_blood/tower/ancient/
+                # end are NEVER dropped, so the cap yields instead: the
+                # old `del self._events[self._max:]` here deleted the tail,
+                # which on an add_end() past the cap would have deleted the
+                # `end` record that had just been appended. Unreachable in
+                # practice (at most ~29 undroppable events exist: 1 draft,
+                # 1 first_blood, <=24 tower, <=2 ancient, 1 end), but the
+                # invariant is the one the replay format promises.
                 return
 
     def add_draft(self) -> None:
