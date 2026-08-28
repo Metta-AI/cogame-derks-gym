@@ -701,8 +701,16 @@ One draft record (the **draft-reveal record**):
 ```
 
 `source` ∈ `{"seat", "house"}`; `fallback_cause` ∈
-`{"none","timeout","malformed","wrong_shape","unknown_item","disconnected","oversize"}`.
+`{"none","timeout","wrong_shape","unknown_item","disconnected","oversize"}`.
 House records carry `player_name: null`, `seat: null`, the neutral picks and `decision_ms: 0`.
+
+> **Editor's note (r1 fix F9, recorded here in r2 as F8).** This enum was planned with a seventh
+> value, `"malformed"`, which no code path can reach — a frame that fails the JSON parse is
+> `"wrong_shape"` (`server.py` `deliver_raw`), and the per-tick loop's unrelated `"malformed"`
+> belongs to `NOOP_CAUSES`. The divergence was resolved in the code's favour: `draft.py`
+> `FALLBACK_CAUSES`, the manifest `results_schema` and `AGENTS.md` all declare the six reachable
+> values, cross-checked by `tests/test_manifest.py` and asserted reachable by
+> `tests/test_draft.py`. The line above is the current contract.
 
 **Why this is self-sufficient**: the viewer needs (a) names — real names in `config.players` and
 aliases in `aliases`; (b) config incl. `seed`; (c) per-tick state — re-derived exactly by
