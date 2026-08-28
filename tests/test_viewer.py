@@ -269,8 +269,9 @@ async def test_headless_core_resimulates_recorded_replay(tmp_path):
 
 
 def test_neutral_replay_needs_no_loadout_push():
-    """An un-drafted replay records loadout_digest 0 and the viewer, which
-    pushes nothing, reproduces exactly that."""
+    """An un-drafted replay records the digest of the all-zero applied
+    table (FNV-1a over 80 zero float32s, not the literal 0) and the
+    viewer, which pushes nothing, reproduces exactly that."""
     cfg = GameConfig.from_dict({
         "players": [{"name": f"s{i}"} for i in range(defaults.NUM_SEATS)],
         "tokens": [f"t{i}" for i in range(defaults.NUM_SEATS)],
