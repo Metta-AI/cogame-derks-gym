@@ -154,6 +154,21 @@ async def test_no_reply_by_the_deadline_is_a_timeout():
         assert rec["picks"] == LEGAL, f"seat {seat}"
 
 
+async def test_decision_ms_is_each_seats_own_answer_time():
+    """decision_ms is the SEAT's measured latency, not the batch elapsed:
+    a seat that answered in milliseconds must not be recorded as having
+    taken the whole deadline."""
+    sources = [Source(frame(), delay=5.0)] + \
+        [Source(frame()) for _ in range(SEATS - 1)]
+    records = by_pid(await run(sources, draft_deadline_ms=1000))
+    slow = records[defaults.SEAT_HERO_PIDS[0]]
+    assert slow["fallback_cause"] == "timeout"
+    assert 900 <= slow["decision_ms"] < 5000, slow["decision_ms"]
+    for seat in range(1, SEATS):
+        rec = records[defaults.SEAT_HERO_PIDS[seat]]
+        assert rec["decision_ms"] < 500, (seat, rec["decision_ms"])
+
+
 async def test_disconnected_seat_is_reported_as_disconnected():
     sources = [Source(None, "disconnected")] + \
         [Source(frame()) for _ in range(SEATS - 1)]

@@ -235,7 +235,7 @@ def neutral_records(cfg: GameConfig) -> list[dict]:
 
 
 async def _one_seat(source: DraftSource, observation: dict,
-                    deadline_at: float, deadline_ms: int,
+                    deadline_at: float,
                     ) -> tuple[object, str | None, int]:
     """One seat's reply, bounded by the SHARED deadline instant.
 
@@ -249,7 +249,10 @@ async def _one_seat(source: DraftSource, observation: dict,
         reply, cause = await asyncio.wait_for(
             source.get_draft(observation), max(0.0, deadline_at - started))
     except (asyncio.TimeoutError, TimeoutError):
-        return None, "timeout", deadline_ms
+        # This seat's own measured wait, not the batch's: decision_ms is
+        # documented as the seat's answer time (design note, the
+        # draft-reveal record).
+        return None, "timeout", int((time.monotonic() - started) * 1000)
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # a source can never break the draft
@@ -283,7 +286,7 @@ async def run_draft(cfg: GameConfig, sources: list[DraftSource],
     deadline_at = time.monotonic() + cfg.draft_deadline_ms / 1000.0
 
     gathered = await asyncio.gather(*(
-        _one_seat(source, observation, deadline_at, cfg.draft_deadline_ms)
+        _one_seat(source, observation, deadline_at)
         for source, observation in zip(sources, observations)))
 
     records: list[dict | None] = [None] * defaults.NUM_HEROES
