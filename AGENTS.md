@@ -54,7 +54,7 @@ demonstrates is `docs/PORTING.md`.
   exactly the same keys. Adding a results field means updating both (and
   `tools/ci/docker_smoke.sh`'s expected-keys set). Same rule for the
   `end_reason` enum (four values) and the draft's `fallback_cause` enum
-  (seven values).
+  (six values -- every one of them reachable; see draft.py).
 - Every string that lands in the replay (a seat's `note` above all) is
   truncated on **Unicode-scalar (rune) boundaries**, never bytes: a
   byte-boundary truncation produces a replay that renders in a browser and

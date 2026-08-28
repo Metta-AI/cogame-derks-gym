@@ -169,6 +169,20 @@ async def test_decision_ms_is_each_seats_own_answer_time():
         assert rec["decision_ms"] < 500, (seat, rec["decision_ms"])
 
 
+def test_every_declared_fallback_cause_is_one_the_draft_can_produce():
+    """The enum is closed AND reachable: every value below is produced by
+    a case in this file. "malformed" belongs to the per-tick NOOP
+    taxonomy (engine.NOOP_CAUSES), not to the draft -- a frame that fails
+    the JSON parse resolves to "wrong_shape"."""
+    from cogame_derks_gym import engine
+
+    assert set(draft.FALLBACK_CAUSES) == {
+        "none", "timeout", "wrong_shape", "unknown_item", "disconnected",
+        "oversize"}
+    assert "malformed" not in draft.FALLBACK_CAUSES
+    assert "malformed" in engine.NOOP_CAUSES
+
+
 async def test_disconnected_seat_is_reported_as_disconnected():
     sources = [Source(None, "disconnected")] + \
         [Source(frame()) for _ in range(SEATS - 1)]

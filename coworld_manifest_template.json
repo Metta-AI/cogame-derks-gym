@@ -473,7 +473,6 @@
                 "enum": [
                   "none",
                   "timeout",
-                  "malformed",
                   "wrong_shape",
                   "unknown_item",
                   "disconnected",

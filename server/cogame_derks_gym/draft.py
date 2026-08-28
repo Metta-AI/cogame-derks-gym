@@ -40,8 +40,12 @@ from . import catalog, defaults
 from .config import GameConfig
 
 # Closed enum, triple-synced with the manifest results_schema and the
-# replay header's draft records.
-FALLBACK_CAUSES = ("none", "timeout", "malformed", "wrong_shape",
+# replay header's draft records. Exactly the six causes the resolution
+# order below can produce -- a declared-but-unreachable seventh value
+# ("malformed") would be a schema that lies about the game: a frame that
+# fails the JSON parse is a "wrong_shape" here (server.py deliver_raw),
+# and NOOP_CAUSES' unrelated "malformed" belongs to the per-tick loop.
+FALLBACK_CAUSES = ("none", "timeout", "wrong_shape",
                    "unknown_item", "disconnected", "oversize")
 SOURCES = ("seat", "house")
 
