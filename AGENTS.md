@@ -101,14 +101,19 @@ declares a static replay viewer bundle (`static-replay-viewer`, built by
 which replaces the legacy replay-route certification probes; the server
 still serves `/client/replay` for local viewing.
 
-Uploads: the `upload-coworld` job in `.github/workflows/ci.yml`
-(push-to-main, gated behind green `test` + `docker-smoke` + `wasm-viewer`
-jobs so a red push can never publish; version = highest existing registry
-row patch-bumped via `tools/ci/next_coworld_version.py` — never
-`coworld next-version`, see its docstring). It warns and skips while the
-`SOFTMAX_TOKEN` repo secret is absent, unless the `UPLOAD_REQUIRED` repo
-variable is `true`. A full release (build -> certify -> upload policies ->
-upload-coworld -> secret put, in that load-bearing order) is
-`.github/workflows/coworld-release.yml`, dispatched manually; league
-submission is `.github/workflows/coworld-submit.yml`. `tools/ci/policies.json`
-is the default policy set the release uploads.
+Uploads: **publishing is `.github/workflows/coworld-release.yml`'s job,
+not CI's.** The full release — build -> certify -> upload policies ->
+upload-coworld -> secret put, in that load-bearing order — is dispatched
+manually (`gh workflow run coworld-release.yml -f version=X.Y.Z`), and
+`tools/ci/policies.json` is the default policy set it uploads. League
+submission is `.github/workflows/coworld-submit.yml`.
+
+`ci.yml` still carries the starter's `upload-coworld` job, but it is now
+**off unless the `UPLOAD_REQUIRED` repo variable is exactly `true`**: a
+push-published version raced the release chain, took the number the
+release then 409ed on, and became canonical while never having been
+locally certified, having no policy versions and no coworld secret
+(derks-gym 0.1.1, 2026-08-28). If it is ever turned back on, its version
+is the highest existing registry row patch-bumped via
+`tools/ci/next_coworld_version.py` — never `coworld next-version`, see
+that picker's docstring.

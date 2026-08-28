@@ -307,14 +307,23 @@ jobs:
   # the picker's docstring).
   #
   # Auth: the SOFTMAX_TOKEN repo secret (propagated by coworld-builder's
-  # propagate-secrets.yml). Absent, this job warns and skips -- unless the
-  # UPLOAD_REQUIRED repo variable is true, which makes it a hard failure.
+  # propagate-secrets.yml). With UPLOAD_REQUIRED on and the secret absent,
+  # the first step fails loudly rather than skipping quietly.
   # ---------------------------------------------------------------------
   upload-coworld:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     needs: [test, docker-smoke, wasm-viewer]
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    # OFF unless the UPLOAD_REQUIRED repo variable is exactly "true":
+    # publishing is coworld-release.yml's job, because a push-published
+    # version raced the release chain, took the version number the release
+    # then 409ed on, and became CANONICAL while never having been locally
+    # certified, having no policy versions and no coworld secret
+    # (derks-gym 0.1.1, 2026-08-28).
+    if: >-
+      github.ref == 'refs/heads/main'
+      && github.event_name != 'pull_request'
+      && vars.UPLOAD_REQUIRED == 'true'
     # One upload at a time; queued runs wait so version query/bump cannot race.
     concurrency:
       group: upload-coworld
