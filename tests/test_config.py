@@ -158,8 +158,14 @@ def test_wall_clock_budget_default_derived():
                                          tick_deadline_ms=1000))
     assert cfg.wall_clock_budget_seconds == pytest.approx(
         0.9 * defaults.PLATFORM_EPISODE_TIMEOUT_MINUTES * 60)
-    # a short episode is capped by its own worst case instead
-    cfg = GameConfig.from_dict(base_dict(max_ticks=100, tick_deadline_ms=500))
+    # a short episode is capped by its own worst case instead — and the
+    # engine's clock starts at the DRAFT, so the draft deadline counts
+    cfg = GameConfig.from_dict(base_dict(max_ticks=100, tick_deadline_ms=500,
+                                         draft_deadline_ms=1000))
+    assert cfg.wall_clock_budget_seconds == pytest.approx(51.0)
+    # ...but not in the un-drafted variant, which has no draft turn
+    cfg = GameConfig.from_dict(base_dict(max_ticks=100, tick_deadline_ms=500,
+                                         draft_enabled=False))
     assert cfg.wall_clock_budget_seconds == pytest.approx(50.0)
 
 

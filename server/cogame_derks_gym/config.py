@@ -147,7 +147,8 @@ class GameConfig:
         budget = data.get(
             "wall_clock_budget_seconds",
             defaults.derived_wall_clock_budget_seconds(
-                max_ticks, tick_deadline_ms))
+                max_ticks, tick_deadline_ms,
+                draft_deadline_ms if draft_enabled else 0))
         if not isinstance(budget, (int, float)) or isinstance(budget, bool) \
                 or not math.isfinite(budget) or budget <= 0:
             raise ConfigError(

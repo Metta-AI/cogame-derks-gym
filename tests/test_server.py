@@ -192,8 +192,10 @@ async def test_full_episode_nodraft_variant(tmp_path):
     replay = Replay.parse(h.replay_path.read_bytes())
     assert replay.tick_count == result.final_tick
     assert replay.header["config"]["draft_enabled"] is False
-    # nothing applied: the digest is the all-zero applied table
-    assert replay.header["loadout_digest"] == 0
+    # nothing applied: the digest is the digest OF the all-zero applied
+    # table (which is what a viewer that pushes nothing reproduces)
+    from cogame_derks_gym import catalog
+    assert replay.header["loadout_digest"] == catalog.loadout_digest()
 
 
 # -- degraded players --------------------------------------------------------
@@ -252,6 +254,8 @@ async def test_malformed_messages_never_crash_episode(tmp_path):
                     data = json.loads(msg.data)
                     if data.get("done"):
                         return data["result"]
+                    if data.get("phase") is not None:
+                        continue  # the draft turn: this client never drafts
                     try:
                         await ws.send_str(next(garbage))
                     except StopIteration:
@@ -288,6 +292,8 @@ async def test_results_report_noop_causes(tmp_path):
                     data = json.loads(msg.data)
                     if data.get("done"):
                         return data["result"]
+                    if data.get("phase") is not None:
+                        continue
                     await ws.send_str(json.dumps({
                         "tick": data["tick"] + 1000,
                         "actions": [list(defaults.NOOP_ACTION)]}))
@@ -334,6 +340,8 @@ async def test_dead_seat_disconnect_during_probe_then_reconnect_revives(
                     data = json.loads(msg.data)
                     if data.get("done"):
                         return data["result"]
+                    if data.get("phase") is not None:
+                        continue
                     await asyncio.sleep(0.025)
                     acts = rng.integers(0, defaults.ACT_HIGH,
                                         size=(1, 6)).tolist()
@@ -392,6 +400,8 @@ async def test_strike_death_force_closes_stale_socket_then_revive(tmp_path):
                     data = json.loads(msg.data)
                     if data.get("done"):
                         return data["result"]
+                    if data.get("phase") is not None:
+                        continue
                     await asyncio.sleep(0.025)
                     acts = rng.integers(0, defaults.ACT_HIGH,
                                         size=(1, 6)).tolist()
@@ -442,6 +452,8 @@ async def test_wall_clock_budget_writes_artifacts(tmp_path):
                     data = json.loads(msg.data)
                     if data.get("done"):
                         return data["result"]
+                    if data.get("phase") is not None:
+                        continue
                     await asyncio.sleep(0.02)
                     acts = rng.integers(0, defaults.ACT_HIGH,
                                         size=(1, 6)).tolist()

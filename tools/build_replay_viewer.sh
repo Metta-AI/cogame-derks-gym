@@ -22,6 +22,9 @@ if [[ "${requested_output}" != /* || "$(basename "${requested_output}")" != "sta
   exit 1
 fi
 
+# `coworld build` pre-creates the parent; a bare CI run does not, and the
+# `cd` below would then exit 1 on a fresh checkout (ecos, 2026-08-23).
+mkdir -p "$(dirname "${requested_output}")"
 output_parent="$(cd "$(dirname "${requested_output}")" && pwd -P)"
 output_dir="${output_parent}/static-replay-viewer"
 if [[ "${output_dir}" != "${repo_dir}"/* || -L "${output_dir}" ]]; then

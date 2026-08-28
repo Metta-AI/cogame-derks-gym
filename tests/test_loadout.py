@@ -82,20 +82,38 @@ def test_zero_loadout_identity():
     assert plain.tick() == TICKS
 
 
-def test_neutral_loadout_digest_is_stable_and_nonzero():
+def test_loadout_digest_matches_the_python_mirror():
+    """The C digest (sim/loadout_common.h) and the Python one
+    (catalog.loadout_digest) must agree: the viewer re-derives the C one
+    and the replay header carries it."""
     require_built()
     sim = MobaSim(seed=7)
-    assert sim.loadout_digest() == 0, \
-        "an un-drafted sim must digest the all-zero applied table"
+    # un-drafted: the digest OF the all-zero applied table (what a viewer
+    # that pushes nothing reproduces)
+    assert sim.loadout_digest() == catalog.loadout_digest()
+
     blocks = neutral_blocks()
     for pid in sorted(blocks):
         sim.apply_loadout(pid, blocks[pid])
     digest = sim.loadout_digest()
-    assert digest != 0
+    assert digest == catalog.loadout_digest(blocks)
+    assert digest != catalog.loadout_digest()
+
     again = MobaSim(seed=7)
     for pid in sorted(blocks):
         again.apply_loadout(pid, blocks[pid])
     assert again.loadout_digest() == digest
+
+    # a single different pick changes it
+    drafted = dict(blocks)
+    drafted[2] = catalog.apply_picks(
+        defaults.HERO_BASE[2],
+        {"arm": "arm_cleaver", "tail": "tail_plate", "misc": "misc_regen"})
+    third = MobaSim(seed=7)
+    for pid in sorted(drafted):
+        third.apply_loadout(pid, drafted[pid])
+    assert third.loadout_digest() == catalog.loadout_digest(drafted)
+    assert third.loadout_digest() != digest
 
 
 # -- (b) every item's documented deltas --------------------------------------

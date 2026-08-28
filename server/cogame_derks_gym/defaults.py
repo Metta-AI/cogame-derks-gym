@@ -172,11 +172,17 @@ DEFAULT_DRAFT_ENABLED = True
 PLATFORM_EPISODE_TIMEOUT_MINUTES = 20
 
 
-def derived_wall_clock_budget_seconds(max_ticks: int,
-                                      tick_deadline_ms: int) -> float:
-    """Default wall-clock budget (see PLATFORM_EPISODE_TIMEOUT_MINUTES)."""
+def derived_wall_clock_budget_seconds(max_ticks: int, tick_deadline_ms: int,
+                                      draft_deadline_ms: int = 0) -> float:
+    """Default wall-clock budget (see PLATFORM_EPISODE_TIMEOUT_MINUTES).
+
+    The engine's clock starts at the DRAFT turn, so the draft's own
+    deadline is part of the budget: draft 45 s + play 6000 x 100 ms =
+    645 s, the design note's figure.
+    """
     return min(0.9 * PLATFORM_EPISODE_TIMEOUT_MINUTES * 60,
-               max_ticks * tick_deadline_ms / 1000.0)
+               draft_deadline_ms / 1000.0
+               + max_ticks * tick_deadline_ms / 1000.0)
 
 
 def clamp_actions(actions: np.ndarray) -> np.ndarray:

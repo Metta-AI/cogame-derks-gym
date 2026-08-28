@@ -199,6 +199,33 @@ def apply_picks(base: dict, picks: dict[str, str]) -> dict:
     return applied
 
 
+def _fnv1a_f32(digest: int, value: float) -> int:
+    for byte in struct.pack("<f", float(value)):
+        digest ^= byte
+        digest = (digest * 16777619) & 0xFFFFFFFF
+    return digest
+
+
+def loadout_digest(applied_by_pid: dict[int, dict] | None = None,
+                   num_heroes: int = 10) -> int:
+    """FNV-1a over the num_heroes x 8 applied float32 table, in pid then
+    field order — the Python mirror of ``derk_loadout_digest`` in
+    sim/loadout_common.h.
+
+    Heroes with no applied block contribute a row of zeros, so an
+    un-drafted sim (and a viewer that pushed nothing) both digest the
+    all-zero table. Tests assert the C and Python values agree.
+    """
+    applied_by_pid = applied_by_pid or {}
+    digest = 2166136261  # FNV-1a offset basis
+    for pid in range(num_heroes):
+        block = applied_by_pid.get(pid)
+        for field in STAT_FIELDS:
+            digest = _fnv1a_f32(digest, 0.0 if block is None
+                                else block[field])
+    return digest
+
+
 def neutral_applied(base: dict) -> dict:
     """The base block itself: every ``*_none`` delta is zero."""
     return apply_picks(base, NEUTRAL_PICKS)

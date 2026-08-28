@@ -277,9 +277,12 @@ def test_neutral_replay_needs_no_loadout_push():
         "seed": 5, "draft_enabled": False,
     })
     writer = ReplayWriter(cfg, "aa" * 32)
-    writer.set_draft(draft.neutral_records(cfg), 0)
+    # nothing is applied, so the recorded digest is the digest OF the
+    # all-zero applied table — exactly what a viewer that pushes nothing
+    # re-derives.
+    writer.set_draft(draft.neutral_records(cfg), catalog.loadout_digest())
     header = json.loads(json.dumps(writer.header({})))
-    assert header["loadout_digest"] == 0
+    assert header["loadout_digest"] == catalog.loadout_digest()
     assert header["config"]["draft_enabled"] is False
     assert all(rec["picks"] == dict(catalog.NEUTRAL_PICKS)
                for rec in header["draft"])
