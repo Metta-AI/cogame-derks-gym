@@ -8,6 +8,7 @@ temperature 0 and its fall-back to the scripted draft rule.
 
 import asyncio
 import json
+import time
 
 import pytest
 
@@ -15,9 +16,11 @@ from cogame_derks_gym import catalog, defaults, draft
 from cogame_derks_gym.config import GameConfig
 
 from players.client import PlayerError
-from players.derk_player import (DEFAULT_SCRIPTED, MAX_NOTE_RUNES, PROMPTS,
-                                 SCRIPTED_NAMES, PromptDraftPolicy,
-                                 ScriptedDraftPolicy, brawler_picks,
+from players.derk_player import (CALL_TIMEOUT_SECONDS,
+                                 DEADLINE_SAFETY_SECONDS, DEFAULT_SCRIPTED,
+                                 MAX_NOTE_RUNES, PROMPTS, SCRIPTED_NAMES,
+                                 PromptDraftPolicy, ScriptedDraftPolicy,
+                                 brawler_picks, call_timeout,
                                  first_json_object, forge_picks, legal_picks,
                                  resolve_mode, strip_one_fence)
 
@@ -209,6 +212,62 @@ async def test_transport_error_falls_back():
     obs = observation(seat=1)
     p = policy(IOError("anthropic HTTP 500"), IOError("again"))
     assert await p.on_draft(obs) == forge_picks(obs)
+
+
+# -- the server's draft deadline bounds our own budget -----------------------
+
+def test_call_timeout_is_capped_by_the_servers_draft_deadline():
+    """The server hands the seat the neutral loadout the moment its own
+    deadline passes, so our call budget must never exceed it."""
+    assert call_timeout({"deadline_ms": 45000}) == CALL_TIMEOUT_SECONDS
+    assert call_timeout({}) == CALL_TIMEOUT_SECONDS          # none offered
+    assert call_timeout({"deadline_ms": "soon"}) == CALL_TIMEOUT_SECONDS
+    # the certification fixture's deadline: one short call, then no retry
+    assert call_timeout({"deadline_ms": 5000}) == pytest.approx(3.5)
+    assert call_timeout({"deadline_ms": 5000}, elapsed=3.4) is None
+    # the schema minimum leaves no room for a call at all
+    assert call_timeout({"deadline_ms": defaults.MIN_DRAFT_DEADLINE_MS}) \
+        is None
+    # and the two-attempt worst case still fits the default 45 s deadline
+    assert 2 * call_timeout({"deadline_ms": 45000}) + \
+        DEADLINE_SAFETY_SECONDS <= 45.0
+
+
+@pytest.mark.slow
+async def test_under_the_certification_deadline_one_short_call_then_scripted(
+        capsys):
+    """The cert fixture seats the keyed drafter under
+    ``draft_deadline_ms: 5000``. A model that does not answer must cost
+    that seat less than the server's deadline, not 2 x 20 s."""
+    obs = dict(observation(seat=2), deadline_ms=5000)
+    p = policy("__hang__", "__hang__")
+    started = time.monotonic()
+    picks = await p.on_draft(obs)
+    elapsed = time.monotonic() - started
+    assert picks == forge_picks(obs)
+    assert len(p._transport.bodies) == 1     # one call, no retry: no room
+    assert elapsed < 5.0, elapsed
+    assert "reason=timeout" in capsys.readouterr().err
+
+
+async def test_a_deadline_too_short_for_any_call_skips_the_llm(capsys):
+    obs = dict(observation(seat=0), deadline_ms=1000)
+    p = policy('{"arm":"arm_blaster","tail":"tail_rotor","misc":"misc_focus"}')
+    picks = await p.on_draft(obs)
+    assert picks == forge_picks(obs)
+    assert p._transport.bodies == []         # no call was made at all
+    assert "draft_fallback=scripted reason=no_time" in capsys.readouterr().err
+
+
+async def test_the_default_deadline_leaves_both_attempts_intact(monkeypatch):
+    import players.derk_player as derk_player
+
+    monkeypatch.setattr(derk_player, "CALL_TIMEOUT_SECONDS", 0.05)
+    obs = observation(seat=1)
+    assert obs["deadline_ms"] == 45000
+    p = policy("__hang__", "__hang__")
+    assert await p.on_draft(obs) == forge_picks(obs)
+    assert len(p._transport.bodies) == 2
 
 
 async def test_missing_api_key_makes_no_call_at_all(capsys):

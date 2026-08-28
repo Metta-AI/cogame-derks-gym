@@ -19,9 +19,13 @@ opponent, one decision that shapes the whole match.
 
 Degrade, never hang: the LLM path has a 20 s per-call timeout, ONE retry
 at temperature 0, and then falls back to ``puffer-forge``'s draft rule.
-20 + 20 s fits inside the server's 45 s draft deadline, so a
-doubly-failing champion still submits a legal loadout on time. No API key
-at all means no call is made.
+Each call's timeout is additionally capped by what is left of the
+SERVER's own draft deadline (the observation's ``deadline_ms``, see
+``call_timeout``), so a short deadline — the certification fixture runs
+5 s — buys one short call instead of two the server stopped waiting for.
+No API key at all means no call is made. The decision runs off the
+websocket read loop (``players/client.py``), so a slow call cannot cost
+the seat its socket to the server's ping/pong heartbeat.
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 
 from .baseline_player import BaselinePolicy
 from .client import PlayerError, run_policy_main, seed_from_env
@@ -42,6 +47,13 @@ ANTHROPIC_VERSION = "2023-06-01"
 MODEL = "claude-sonnet-4-5"
 MAX_TOKENS = 400
 CALL_TIMEOUT_SECONDS = 20.0
+# The draft observation carries the SERVER's deadline (`deadline_ms`); our
+# own call budget is capped by what is left of it. These two carve out the
+# rest: the margin kept for encoding and sending the reply frame (plus the
+# scripted fallback), and the floor below which starting a call is not
+# worth it at all.
+DEADLINE_SAFETY_SECONDS = 1.5
+MIN_CALL_SECONDS = 1.0
 RETRY_REMINDER = "Reply with the JSON object only."
 # The server's cap on the one free-text field (docs/DRAFT.md); mirrored
 # here so an over-long note is trimmed before it is sent rather than
@@ -215,6 +227,29 @@ def _prompt_payload(observation: dict) -> str:
         separators=(",", ":"))
 
 
+def call_timeout(observation: dict, elapsed: float = 0.0) -> float | None:
+    """Timeout for the next LLM call, or None for "no time left".
+
+    Our own 20 s per-call budget, capped by what is left of the SERVER's
+    draft deadline (the observation's ``deadline_ms``) minus the margin
+    that sending the reply needs. A seat that overruns the server's
+    deadline gets the neutral loadout, so overrunning it is strictly worse
+    than a shorter call: under the certification fixture's
+    ``draft_deadline_ms: 5000`` this yields ONE ~3.5 s call and then the
+    scripted rule, instead of two 20 s calls the server stopped waiting
+    for. An observation with no usable ``deadline_ms`` keeps the full
+    20 s budget.
+    """
+    deadline_ms = observation.get("deadline_ms")
+    if isinstance(deadline_ms, bool) or not isinstance(
+            deadline_ms, (int, float)):
+        return CALL_TIMEOUT_SECONDS
+    remaining = deadline_ms / 1000.0 - DEADLINE_SAFETY_SECONDS - elapsed
+    if remaining < MIN_CALL_SECONDS:
+        return None
+    return min(CALL_TIMEOUT_SECONDS, remaining)
+
+
 # -- the policies -----------------------------------------------------------
 
 class ScriptedDraftPolicy:
@@ -268,12 +303,20 @@ class PromptDraftPolicy:
                   "reason=no_key)", file=sys.stderr)
             return self._fallback(observation)
         user = _prompt_payload(observation)
+        started = time.monotonic()
+        reason = "no_time"
         for attempt in (1, 2):
+            timeout = call_timeout(observation, time.monotonic() - started)
+            if timeout is None:
+                print(f"draft={self.prompt_name} attempt {attempt} skipped: "
+                      f"no time left inside the server's "
+                      f"{observation.get('deadline_ms')} ms draft deadline",
+                      file=sys.stderr)
+                break
             reminder = attempt == 2
             try:
                 text = await asyncio.wait_for(
-                    self._call(user, reminder=reminder),
-                    CALL_TIMEOUT_SECONDS)
+                    self._call(user, reminder=reminder), timeout)
             except (asyncio.TimeoutError, TimeoutError):
                 reason = "timeout"
                 text = None
