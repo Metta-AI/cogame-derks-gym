@@ -273,15 +273,25 @@ async def test_the_default_deadline_leaves_both_attempts_intact(monkeypatch):
     assert len(p._transport.bodies) == 2
 
 
-async def test_missing_api_key_makes_no_call_at_all(capsys):
+async def test_missing_api_key_makes_no_call_at_all(capsys, monkeypatch):
+    """No key and no injected transport: the real HTTP path must never be
+    entered (not even to be timed out or to fail)."""
+    import players.derk_player as derk_player
+
+    calls = []
+
+    async def never(body, api_key):
+        calls.append(body)
+        raise AssertionError("an LLM call was made without an API key")
+
+    monkeypatch.setattr(derk_player, "_anthropic_call", never)
     obs = observation(seat=1)
-    transport = Transport('{"arm":"arm_cleaver","tail":"tail_plate",'
-                          '"misc":"misc_regen"}')
     p = PromptDraftPolicy("derk-drafter-v1", micro=lambda t, rows: [],
                           api_key=None, transport=None)
     picks = await p.on_draft(obs)
     assert picks == forge_picks(obs)
-    assert transport.bodies == []
+    assert calls == []               # the transport was never invoked
+    assert p.last_request is None    # _call never even built a body
     assert "ANTHROPIC_API_KEY is not set" in capsys.readouterr().err
 
 
