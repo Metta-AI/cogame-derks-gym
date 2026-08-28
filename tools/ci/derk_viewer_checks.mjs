@@ -22,14 +22,19 @@
 //      the #controls box)
 //   6. at 360x640 the computed font size of #derk-scorebug is >= 10px and no
 //      element overlaps the transport band
-//   7. screenshots both widths; exits non-zero on any failure
+//   7. worst-case model text: the same bundle loaded against a replay whose
+//      six seat records each carry a FULL-CAP (120-rune), unbreakable note --
+//      the draft overlay must still lay out inside the transport band, must
+//      not clip sideways, and must still hold the full-length strings
+//   8. screenshots; exits non-zero on any failure
 //
 // usage: node tools/ci/derk_viewer_checks.mjs --bundle <dir> --replay <file>
 //                                             [--timeout 90] [--out .]
 "use strict";
 
 import { createServer } from "node:http";
-import { createReadStream, existsSync, statSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync,
+         writeFileSync } from "node:fs";
 import { basename, extname, join, resolve, sep } from "node:path";
 import process from "node:process";
 
@@ -74,9 +79,9 @@ function parseArgs(argv) {
 
 const args = parseArgs(process.argv.slice(2));
 
-function serve(bundleDir, replayPath) {
+function serve(bundleDir, replayPaths) {
   const root = resolve(bundleDir);
-  const replayName = basename(replayPath);
+  const replays = new Map(replayPaths.map((p) => [`/${basename(p)}`, p]));
   const server = createServer((req, res) => {
     let pathname;
     try {
@@ -86,10 +91,9 @@ function serve(bundleDir, replayPath) {
       return;
     }
     if (pathname === "/") pathname = "/index.html";
-    const target = pathname === `/${replayName}`
-      ? replayPath
-      : resolve(join(root, pathname));
-    if (target !== replayPath && !(target === root || target.startsWith(root + sep))) {
+    const mapped = replays.get(pathname);
+    const target = mapped || resolve(join(root, pathname));
+    if (!mapped && !(target === root || target.startsWith(root + sep))) {
       res.writeHead(403).end("forbidden");
       return;
     }
@@ -109,11 +113,41 @@ function serve(bundleDir, replayPath) {
       const { port } = server.address();
       ok({
         server,
-        url: `http://127.0.0.1:${port}/index.html?replay=` +
-          encodeURIComponent(`http://127.0.0.1:${port}/${replayName}`),
+        urlFor: (p) => `http://127.0.0.1:${port}/index.html?replay=` +
+          encodeURIComponent(`http://127.0.0.1:${port}/${basename(p)}`),
       });
     });
   });
+}
+
+// The only model-authored string that reaches this viewer is a seat's draft
+// `note`, capped server-side at 120 Unicode scalars (draft.truncate_note).
+// CI replays carry no model text at all -- every smoke seat is scripted and
+// puffer-forge emits no note -- so the worst case has to be built here, from
+// the real recorded replay, and then loaded through the real bundle.
+// Unbroken Ws: no wrap opportunity anywhere, the widest ASCII glyph.
+const WORST_NOTE = "W".repeat(120);
+
+function writeWorstCaseNoteReplay(srcPath, outPath) {
+  const buf = readFileSync(srcPath);
+  if (buf.length < 9 || buf.toString("latin1", 0, 4) !== "DERK" || buf[4] !== 2) {
+    throw new Error(`not a DERK v2 replay: ${srcPath}`);
+  }
+  const headerLen = buf.readUInt32LE(5);
+  const header = JSON.parse(buf.toString("utf8", 9, 9 + headerLen));
+  const body = buf.subarray(9 + headerLen);
+  let seats = 0;
+  for (const rec of header.draft || []) {
+    if (rec.source === "seat") { rec.note = WORST_NOTE; seats += 1; }
+  }
+  if (seats !== 6) throw new Error(`expected 6 seat draft records, got ${seats}`);
+  const headerBytes = Buffer.from(JSON.stringify(header), "utf8");
+  const prefix = Buffer.alloc(9);
+  prefix.write("DERK", 0, "latin1");
+  prefix[4] = 2;
+  prefix.writeUInt32LE(headerBytes.length, 5);
+  writeFileSync(outPath, Buffer.concat([prefix, headerBytes, body]));
+  return outPath;
 }
 
 async function loadChromium() {
@@ -156,7 +190,10 @@ const summary = {};
 
 async function main() {
   const chromium = await loadChromium();
-  const { server, url } = await serve(args.bundle, args.replay);
+  const worstPath = writeWorstCaseNoteReplay(
+    args.replay, join(args.outDir, "worst-case-notes.replay"));
+  const { server, urlFor } = await serve(args.bundle, [args.replay, worstPath]);
+  const url = urlFor(args.replay);
   const browser = await chromium.launch({
     headless: true,
     args: ["--enable-unsafe-swiftshader", "--use-gl=swiftshader",
@@ -352,6 +389,65 @@ async function main() {
       `no chrome element overlaps the transport band at 360px ` +
       `(${JSON.stringify(narrow.overlapping)})`);
     await page.screenshot({ path: join(args.outDir, "derk-viewer-360.png") });
+    await page.close();
+
+    // -- 7. worst case: a full-cap note on EVERY seat at once ---------
+    // This viewer draws NO model text on the canvas (viewer_smoke reports
+    // canvas_text total 0 because the renderer is WebGL/raylib and every
+    // readout is DOM), so the checklist's worst-case renderer fixture is a
+    // DOM fixture here: the same bundle, the same real replay, with all six
+    // notes replaced by the 120-rune cap. Scrolling is fine (the overlay is
+    // overflow:auto by design); clipping and a covered transport are not,
+    // and a note that arrived shortened would mean the fixture tested
+    // nothing.
+    page = await browser.newPage({ viewport: { width: 360, height: 640 } });
+    page.on("pageerror", (e) => console_lines.push(`pageerror(worst): ${e.message}`));
+    await page.goto(urlFor(worstPath), { waitUntil: "domcontentloaded" });
+    await waitLoaded(page, args.timeout * 1000);
+    await page.evaluate(() => {
+      const play = document.getElementById("playpause");
+      if (play && play.textContent === "pause") play.click();
+      const open = document.getElementById("derk-draft-open");
+      if (open) open.click();
+    });
+    await page.waitForTimeout(500);
+    const worst = await page.evaluate((cap) => {
+      const overlay = document.getElementById("derk-draft");
+      const controls = document.getElementById("controls").getBoundingClientRect();
+      const box = overlay.getBoundingClientRect();
+      const notes = [...overlay.querySelectorAll(".derk-card .derk-note")];
+      return {
+        hidden: overlay.hidden,
+        notes: notes.length,
+        fullLength: notes.filter((n) => n.textContent.length === cap).length,
+        clipped: notes.filter((n) => {
+          const nb = n.getBoundingClientRect();
+          const cb = n.parentElement.getBoundingClientRect();
+          return nb.height < 1 || nb.right > cb.right + 1 || nb.left < cb.left - 1;
+        }).length,
+        overflowX: overlay.scrollWidth - overlay.clientWidth,
+        scrollable: overlay.scrollHeight > overlay.clientHeight,
+        bottom: box.bottom,
+        controlsTop: controls.top,
+      };
+    }, WORST_NOTE.length);
+    summary.worst_case_notes = worst;
+    check(!worst.hidden && worst.notes === 6,
+      `worst case: 6 full-cap notes rendered in #derk-draft (got ${worst.notes})`);
+    check(worst.fullLength === worst.notes,
+      `worst case: every note is still ${WORST_NOTE.length} runes long ` +
+      `(${worst.fullLength}/${worst.notes})`);
+    check(worst.clipped === 0,
+      `worst case: no note is clipped by its card (${worst.clipped} clipped)`);
+    check(worst.overflowX <= 1,
+      `worst case: #derk-draft does not overflow sideways ` +
+      `(scrollWidth - clientWidth = ${worst.overflowX}px; vertical scroll ` +
+      `is fine: scrollable=${worst.scrollable})`);
+    check(worst.bottom <= worst.controlsTop + 1,
+      `worst case: #derk-draft still stops above the transport band ` +
+      `(${worst.bottom} <= ${worst.controlsTop})`);
+    await page.screenshot({
+      path: join(args.outDir, "derk-viewer-worst-notes-360.png") });
 
     summary.console_tail = console_lines.slice(-30);
   } finally {

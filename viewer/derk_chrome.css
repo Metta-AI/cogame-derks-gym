@@ -252,7 +252,17 @@
 .derk-card .derk-role { color: #9cc; }
 .derk-card .derk-items { color: #cfe; }
 .derk-card .derk-stats { color: #9cc; }
-.derk-card .derk-note { color: #fd5; font-style: italic; }
+/* The note is the only model-authored string on the page and it is capped
+ * at 120 runes server-side, but nothing forces those runes to contain a
+ * space: `anywhere` (not `break-word`) also shrinks the min-content width,
+ * so one unbreakable 120-character remark cannot widen its grid column and
+ * push the card out of the overlay. tools/ci/derk_viewer_checks.mjs loads a
+ * replay with exactly that note on all six seats. */
+.derk-card .derk-note {
+  color: #fd5;
+  font-style: italic;
+  overflow-wrap: anywhere;
+}
 .derk-card .derk-fallback { color: #fa4; }
 
 #derk-endcard-inner {
