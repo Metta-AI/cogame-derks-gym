@@ -1,9 +1,13 @@
-"""The prompt policies: parsing, the one retry, and the fallbacks.
+"""The prompt policies: provider selection, parsing, the one retry, and
+the fallbacks.
 
-The Anthropic transport is stubbed everywhere here — a test suite must
-never make a network call — but the code under test is the real
-`PromptDraftPolicy.on_draft`, including its timeout, its single retry at
-temperature 0 and its fall-back to the scripted draft rule.
+Both transports are stubbed here — a test suite must never make a network
+call — but the code under test is the real `PromptDraftPolicy.on_draft`,
+including its timeout, its single retry at temperature 0 and its
+fall-back to the scripted draft rule. The Bedrock cases stub the aiohttp
+session instead of the transport function, so the InvokeModel request
+this policy actually sends (URL, bearer header, anthropic_version) is
+asserted rather than assumed.
 """
 
 import asyncio
@@ -17,13 +21,18 @@ from cogame_derks_gym import catalog, defaults, draft
 from cogame_derks_gym.config import GameConfig
 
 from players.client import PlayerError
-from players.derk_player import (CALL_TIMEOUT_SECONDS,
+from players.derk_player import (BEDROCK_ANTHROPIC_VERSION,
+                                 BEDROCK_DEFAULT_REGION,
+                                 BEDROCK_MODEL_CANDIDATES,
+                                 CALL_TIMEOUT_SECONDS,
                                  DEADLINE_SAFETY_SECONDS, DEFAULT_SCRIPTED,
-                                 FALLBACK_REASONS, MAX_NOTE_RUNES, PROMPTS,
-                                 SCRIPTED_NAMES,
+                                 FALLBACK_REASONS, MAX_NOTE_RUNES, MODEL,
+                                 PROMPTS, PROVIDERS, SCRIPTED_NAMES,
                                  PromptDraftPolicy, ScriptedDraftPolicy,
+                                 bedrock_endpoint, bedrock_models,
                                  brawler_picks, call_timeout,
                                  first_json_object, forge_picks, legal_picks,
+                                 model_for_provider, provider_from_env,
                                  resolve_mode, strip_one_fence)
 
 REAL_NAMES = [f"champion-{i}" for i in range(defaults.NUM_SEATS)]
@@ -478,3 +487,272 @@ def test_main_exits_2_on_an_unknown_baseline(monkeypatch, capsys):
 def test_scripted_policy_rejects_an_unknown_name():
     with pytest.raises(PlayerError):
         ScriptedDraftPolicy("nope", micro=lambda t, rows: [])
+
+
+# -- provider selection ------------------------------------------------------
+#
+# A hosted player pod never receives ANTHROPIC_API_KEY: the platform grants
+# it a Bedrock sidecar and gates that on USE_BEDROCK in the policy env
+# (cogolf, 2026-08-24). Getting this matrix wrong is invisible in
+# results.draft_fallbacks and costs a whole league round of champion play,
+# so every row is pinned.
+
+SIDE = {"AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "http://127.0.0.1:9/bedrock",
+        "AWS_BEARER_TOKEN_BEDROCK": "sidecar-token"}
+
+
+@pytest.mark.parametrize("env,expected", [
+    ({}, "none"),
+    ({"PLAYER_PROMPT": "derk-drafter-v1"}, "none"),
+    ({"ANTHROPIC_API_KEY": "sk-test"}, "anthropic"),
+    ({"ANTHROPIC_API_KEY": "   "}, "none"),
+    ({"USE_BEDROCK": "true"}, "bedrock"),
+    ({"USE_BEDROCK": "True"}, "bedrock"),
+    ({"USE_BEDROCK": "1"}, "bedrock"),
+    ({"USE_BEDROCK": "yes"}, "bedrock"),
+    ({"USE_BEDROCK": "false"}, "none"),
+    ({"USE_BEDROCK": ""}, "none"),
+    # the sidecar variables alone are enough
+    (dict(SIDE), "bedrock"),
+    ({"AWS_ENDPOINT_URL_BEDROCK_RUNTIME": SIDE[
+        "AWS_ENDPOINT_URL_BEDROCK_RUNTIME"]}, "bedrock"),
+    ({"AWS_BEARER_TOKEN_BEDROCK": "t"}, "bedrock"),
+    # bedrock wins over a key that a hosted pod would not have anyway
+    ({"USE_BEDROCK": "true", "ANTHROPIC_API_KEY": "sk-test"}, "bedrock"),
+    # the explicit override, both ways
+    ({"COGAME_LLM_PROVIDER": "anthropic", "USE_BEDROCK": "true"},
+     "anthropic"),
+    ({"COGAME_LLM_PROVIDER": "bedrock"}, "bedrock"),
+    ({"COGAME_LLM_PROVIDER": "none", "ANTHROPIC_API_KEY": "sk-test"},
+     "none"),
+    # an unknown override is ignored, not obeyed silently
+    ({"COGAME_LLM_PROVIDER": "openai", "ANTHROPIC_API_KEY": "sk-test"},
+     "anthropic"),
+])
+def test_provider_selection_matrix(env, expected):
+    assert provider_from_env(env) == expected
+    assert expected in PROVIDERS
+
+
+def test_the_release_policy_env_selects_bedrock():
+    """The exact env the release uploads for each champion."""
+    policies = json.loads(
+        (REPO_ROOT / "tools" / "ci" / "policies.json").read_text())
+    prompts = [row for row in policies if "PLAYER_PROMPT" in row["env"]]
+    assert len(prompts) == 2
+    for row in prompts:
+        assert provider_from_env(row["env"]) == "bedrock", row["name"]
+    for row in policies:
+        if "PLAYER_SCRIPTED" in row["env"]:
+            # a filler makes no calls at all
+            assert provider_from_env(row["env"]) == "none", row["name"]
+
+
+def test_model_and_endpoint_defaults():
+    assert model_for_provider("anthropic") == MODEL == "claude-sonnet-4-5"
+    assert model_for_provider("bedrock", {}) == BEDROCK_MODEL_CANDIDATES[0]
+    assert BEDROCK_MODEL_CANDIDATES[0].startswith(
+        "us.anthropic.claude-sonnet-4-5")
+    # a pinned id wins, and the candidates stay as fallbacks behind it
+    assert bedrock_models({"BEDROCK_MODEL": "pinned-id"})[0] == "pinned-id"
+    assert bedrock_models({"COGAME_LLM_MODEL": "pinned-id"})[0] == "pinned-id"
+    assert bedrock_models({"BEDROCK_MODEL": "pinned-id"})[1:] == \
+        list(BEDROCK_MODEL_CANDIDATES)
+    assert len(set(bedrock_models({"BEDROCK_MODEL":
+                                   BEDROCK_MODEL_CANDIDATES[0]}))) == \
+        len(BEDROCK_MODEL_CANDIDATES)
+    # the sidecar endpoint wins over the regional default
+    assert bedrock_endpoint(SIDE) == "http://127.0.0.1:9/bedrock"
+    assert bedrock_endpoint({}) == \
+        f"https://bedrock-runtime.{BEDROCK_DEFAULT_REGION}.amazonaws.com"
+    assert bedrock_endpoint({"AWS_REGION": "eu-west-1"}) == \
+        "https://bedrock-runtime.eu-west-1.amazonaws.com"
+    # a trailing slash never doubles up in the request URL
+    assert bedrock_endpoint(
+        {"AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "http://side/"}) == "http://side"
+
+
+# -- the Bedrock transport (stubbed at the HTTP boundary) --------------------
+
+class FakeBedrock:
+    """Stands in for aiohttp.ClientSession: records every InvokeModel
+    request and replays scripted (status, payload) outcomes."""
+
+    def __init__(self, *outcomes):
+        self.outcomes = list(outcomes)
+        self.requests = []
+
+    def __call__(self, *args, **kwargs):          # ClientSession(...)
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def post(self, url, *, headers=None, json=None):
+        self.requests.append({"url": url, "headers": headers or {},
+                              "body": json or {}})
+        outcome = self.outcomes.pop(0) if self.outcomes else (200, {})
+        return _FakeResponse(*outcome)
+
+
+class _FakeResponse:
+    def __init__(self, status, payload):
+        self.status = status
+        self._payload = payload
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def json(self, content_type=None):
+        return self._payload
+
+    async def text(self):
+        return json.dumps(self._payload)
+
+
+def _bedrock_text(text):
+    return 200, {"content": [{"type": "text", "text": text}]}
+
+
+def bedrock_policy(fake, env=None, prompt="derk-drafter-v1", monkeypatch=None):
+    import aiohttp
+    monkeypatch.setattr(aiohttp, "ClientSession", fake)
+    return PromptDraftPolicy(prompt, micro=lambda t, rows: [], api_key=None,
+                             provider="bedrock", env=dict(SIDE, **(env or {})))
+
+
+async def test_bedrock_invoke_shape_and_success(monkeypatch):
+    picks = '{"arm":"arm_cleaver","tail":"tail_plate","misc":"misc_regen"}'
+    fake = FakeBedrock(_bedrock_text(picks))
+    p = bedrock_policy(fake, monkeypatch=monkeypatch)
+    obs = observation(seat=2)
+    assert await p.on_draft(obs) == {
+        "arm": "arm_cleaver", "tail": "tail_plate", "misc": "misc_regen"}
+
+    assert len(fake.requests) == 1
+    request = fake.requests[0]
+    assert request["url"] == (
+        f"http://127.0.0.1:9/bedrock/model/{BEDROCK_MODEL_CANDIDATES[0]}"
+        f"/invoke")
+    assert request["headers"]["authorization"] == "Bearer sidecar-token"
+    assert request["headers"]["content-type"] == "application/json"
+    body = request["body"]
+    # InvokeModel wants the version key and NO model in the body
+    assert body["anthropic_version"] == BEDROCK_ANTHROPIC_VERSION
+    assert "model" not in body
+    # ...and otherwise exactly the same prompt as the Anthropic path
+    assert body["max_tokens"] == 400
+    assert body["system"] == PROMPTS["derk-drafter-v1"]
+    assert "temperature" not in body
+    user = json.loads(body["messages"][0]["content"])
+    assert "deadline_ms" not in user
+    for name in REAL_NAMES:
+        assert name not in json.dumps(body)
+
+
+async def test_bedrock_pinned_model_is_used(monkeypatch):
+    picks = '{"arm":"arm_blaster","tail":"tail_rotor","misc":"misc_focus"}'
+    fake = FakeBedrock(_bedrock_text(picks))
+    p = bedrock_policy(fake, env={"BEDROCK_MODEL": "us.pinned-model-v1:0"},
+                       monkeypatch=monkeypatch)
+    assert (await p.on_draft(observation(seat=1)))["arm"] == "arm_blaster"
+    assert fake.requests[0]["url"].endswith(
+        "/model/us.pinned-model-v1:0/invoke")
+
+
+async def test_bedrock_falls_through_to_the_next_model_on_403(monkeypatch):
+    picks = '{"arm":"arm_blaster","tail":"tail_plate","misc":"misc_battery"}'
+    fake = FakeBedrock((403, {"message": "not subscribed"}),
+                       _bedrock_text(picks))
+    p = bedrock_policy(fake, monkeypatch=monkeypatch)
+    assert (await p.on_draft(observation(seat=0)))["arm"] == "arm_blaster"
+    assert [r["url"].split("/model/")[1] for r in fake.requests] == [
+        f"{BEDROCK_MODEL_CANDIDATES[0]}/invoke",
+        f"{BEDROCK_MODEL_CANDIDATES[1]}/invoke"]
+
+
+async def test_bedrock_malformed_reply_retries_once_then_falls_back(
+        capsys, monkeypatch):
+    fake = FakeBedrock(_bedrock_text("no json here"),
+                       _bedrock_text("still nothing"))
+    p = bedrock_policy(fake, monkeypatch=monkeypatch)
+    obs = observation(seat=2)
+    assert await p.on_draft(obs) == forge_picks(obs)
+    # one call per attempt, each trying every candidate before giving up
+    attempts = [r for r in fake.requests
+                if r["url"].endswith(
+                    f"{BEDROCK_MODEL_CANDIDATES[0]}/invoke")]
+    assert len(attempts) == 2
+    assert attempts[1]["body"]["temperature"] == 0
+    assert "Reply with the JSON object only." in attempts[1]["body"]["system"]
+    err = capsys.readouterr().err
+    assert "draft_fallback=scripted reason=parse" in err
+
+
+async def test_bedrock_every_model_failing_is_a_transport_fallback(
+        capsys, monkeypatch):
+    fake = FakeBedrock((403, {"message": "no"}), (429, {"message": "busy"}),
+                       (403, {"message": "no"}), (429, {"message": "busy"}))
+    p = bedrock_policy(fake, monkeypatch=monkeypatch)
+    obs = observation(seat=1)
+    assert await p.on_draft(obs) == forge_picks(obs)
+    err = capsys.readouterr().err
+    assert "draft_fallback=scripted reason=transport" in err
+    assert "bedrock invoke failed" in err
+
+
+async def test_bedrock_timeout_falls_back_without_hanging(monkeypatch):
+    import players.derk_player as derk_player
+
+    monkeypatch.setattr(derk_player, "CALL_TIMEOUT_SECONDS", 0.05)
+
+    class Hanging(FakeBedrock):
+        def post(self, url, *, headers=None, json=None):
+            self.requests.append({"url": url, "headers": headers or {},
+                                  "body": json or {}})
+            return _HangingResponse()
+
+    class _HangingResponse:
+        async def __aenter__(self):
+            await asyncio.sleep(60)
+
+        async def __aexit__(self, *exc):
+            return False
+
+    fake = Hanging()
+    p = bedrock_policy(fake, monkeypatch=monkeypatch)
+    obs = observation(seat=0)
+    picks = await asyncio.wait_for(p.on_draft(obs), 5)
+    assert picks == forge_picks(obs)
+
+
+async def test_bedrock_provider_never_reaches_the_anthropic_path(monkeypatch):
+    import players.derk_player as derk_player
+
+    async def never(body, api_key):
+        raise AssertionError("the Anthropic path was used for bedrock")
+
+    monkeypatch.setattr(derk_player, "_anthropic_call", never)
+    fake = FakeBedrock(_bedrock_text(
+        '{"arm":"arm_needler","tail":"tail_rotor","misc":"misc_regen"}'))
+    p = bedrock_policy(fake, monkeypatch=monkeypatch)
+    assert (await p.on_draft(observation(seat=1)))["arm"] == "arm_needler"
+
+
+def test_a_prompt_policy_reports_its_provider_and_model():
+    anthropic = PromptDraftPolicy("derk-drafter-v1", micro=lambda t, r: [],
+                                  api_key="sk-test")
+    assert anthropic.provider == "anthropic"
+    assert anthropic.model == MODEL
+    bedrock = PromptDraftPolicy("derk-drafter-v1", micro=lambda t, r: [],
+                                provider="bedrock", env=dict(SIDE))
+    assert bedrock.provider == "bedrock"
+    assert bedrock.model == BEDROCK_MODEL_CANDIDATES[0]
+    nothing = PromptDraftPolicy("derk-drafter-v1", micro=lambda t, r: [])
+    assert nothing.provider == "none"

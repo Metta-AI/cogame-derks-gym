@@ -246,7 +246,8 @@ def test_players_are_one_image_env_switched():
     assert entries["lane-brawler"]["env"] == {"PLAYER_SCRIPTED": "lane-brawler"}
     assert entries["drafter"]["env"] == {
         "PLAYER_PROMPT": "derk-drafter-v1",
-        "ANTHROPIC_API_KEY_URI": "secret://coworld/derks-gym/anthropic_api_key"}
+        "ANTHROPIC_API_KEY_URI": "secret://coworld/derks-gym/anthropic_api_key",
+        "USE_BEDROCK": "true"}
 
 
 def test_every_declared_player_has_a_certification_slot():
@@ -262,9 +263,9 @@ def test_every_declared_player_has_a_certification_slot():
 
 
 def test_llm_runnables_ask_for_the_coworld_secret_by_uri():
-    """Without ANTHROPIC_API_KEY_URI the hosted player pod never receives
-    the secret and the champion silently plays its scripted draft rule
-    (hive, 2026-08-23). The namespace is game.name, not the repo slug."""
+    """The namespace is game.name, not the repo slug. Kept alongside
+    USE_BEDROCK below: it costs nothing and covers a platform that ever
+    does materialise the key in a player pod."""
     expected = f"secret://coworld/{MANIFEST['game']['name']}/anthropic_api_key"
     prompt_entries = [entry for entry in MANIFEST["player"]
                       if "PLAYER_PROMPT" in (entry.get("env") or {})]
@@ -274,6 +275,34 @@ def test_llm_runnables_ask_for_the_coworld_secret_by_uri():
     for row in POLICIES:
         if "PLAYER_PROMPT" in row["env"]:
             assert row["env"].get("ANTHROPIC_API_KEY_URI") == expected, row
+
+
+def test_every_llm_policy_gates_the_bedrock_sidecar():
+    """A hosted player pod never receives ANTHROPIC_API_KEY: the platform
+    grants it a Bedrock sidecar, and it gates that on USE_BEDROCK in the
+    policy env (`resolve_player_bedrock`). Without this the champions
+    silently draft with their scripted rule — invisible to
+    results.draft_fallbacks, which counts server-side substitutions only
+    (cogolf, 2026-08-24; observed on derks-gym 0.1.0's league rounds).
+
+    Every PLAYER_PROMPT entry, in the manifest AND in the release's policy
+    set, must carry it; a PLAYER_SCRIPTED entry must not (it makes no
+    calls, and a needless sidecar is a needless cost)."""
+    from players.derk_player import provider_from_env
+
+    for entry in MANIFEST["player"]:
+        env = entry.get("env") or {}
+        if "PLAYER_PROMPT" in env:
+            assert env.get("USE_BEDROCK") == "true", entry["id"]
+            assert provider_from_env(env) == "bedrock", entry["id"]
+        else:
+            assert "USE_BEDROCK" not in env, entry["id"]
+    for row in POLICIES:
+        if "PLAYER_PROMPT" in row["env"]:
+            assert row["env"].get("USE_BEDROCK") == "true", row["name"]
+            assert provider_from_env(row["env"]) == "bedrock", row["name"]
+        else:
+            assert "USE_BEDROCK" not in row["env"], row["name"]
 
 
 def test_policies_json_has_two_prompt_champions_and_two_baselines():

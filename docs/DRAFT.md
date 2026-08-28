@@ -186,7 +186,7 @@ with `reason` from this closed set (`derk_player.FALLBACK_REASONS`):
 
 | reason | meaning |
 |---|---|
-| `no_key` | `ANTHROPIC_API_KEY` unset — no call was made at all |
+| `no_key` | no LLM provider at all — neither a Bedrock sidecar (`USE_BEDROCK` in the policy env, which is how a hosted pod is granted one) nor `ANTHROPIC_API_KEY`; no call was made |
 | `no_time` | the observation's `deadline_ms` left less than 1 s for a call, so none was made (`derk_player.call_timeout`) |
 | `timeout` | a call did not answer inside its budget (min of 20 s and what is left of `deadline_ms`) |
 | `parse` | the reply contained no extractable JSON object |
@@ -194,7 +194,27 @@ with `reason` from this closed set (`derk_player.FALLBACK_REASONS`):
 | `transport` | HTTP/network failure (the exception type is logged on its own line) |
 
 A successful model draft logs `draft=<prompt name> attempt=<1\|2>
-picks={...}` instead, and never the `draft_fallback=` line. So:
+picks={...}` instead, and never the `draft_fallback=` line. The transport
+it used is logged once at startup: `policy: prompt <name> … provider=<bedrock\|anthropic\|none>
+model=… [endpoint=…]`.
+
+**Two transports, one call site.** A hosted player pod never receives
+`ANTHROPIC_API_KEY`; the platform grants it a **Bedrock sidecar** instead
+and gates that on `USE_BEDROCK: "true"` in the policy env
+(`resolve_player_bedrock`), handing the pod
+`AWS_ENDPOINT_URL_BEDROCK_RUNTIME` + `AWS_BEARER_TOKEN_BEDROCK`
+(+ `BEDROCK_MODEL` when pinned). `derk_player.provider_from_env` picks:
+an explicit `COGAME_LLM_PROVIDER` override, else bedrock when
+`USE_BEDROCK` is truthy or either sidecar variable is present, else
+anthropic when a key is present, else none. The Bedrock path is
+InvokeModel over HTTP (`POST <endpoint>/model/<model id>/invoke` with
+`anthropic_version: bedrock-2023-05-31`), and it tries its model ids in
+order so an unsubscribed or throttled profile falls through instead of
+idling the champion. Everything else — the prompt, the tolerant parse,
+the single retry at temperature 0, the `deadline_ms`-derived budget — is
+shared. Without `USE_BEDROCK` a hosted champion logs
+`draft_fallback=scripted reason=no_key` on every episode and plays its
+scripted rule (cogolf, 2026-08-24; observed on derks-gym 0.1.0). So:
 **count LLM usage from the player logs — `draft_fallback=scripted
 reason=…` per champion container — not from `results.draft_fallbacks`,
 which is the server-side number.**

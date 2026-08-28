@@ -101,10 +101,17 @@ Both unset plays `puffer-forge`, so a bare `docker run` works. Both set:
 `PLAYER_PROMPT` wins and says so. An unknown name exits 2 with the legal
 list — a typo must fail loudly, not silently ship a different policy.
 
-The LLM path is **degrade-never-hang**: one Anthropic call per episode with a
-20 s timeout, one retry at temperature 0, then the `puffer-forge` draft rule.
-Worst case 40 s, inside the server's 45 s draft deadline. No
-`ANTHROPIC_API_KEY` means no call at all.
+The LLM path is **degrade-never-hang**: one model call per episode with a
+20 s timeout (further capped by what is left of the server's draft deadline),
+one retry at temperature 0, then the `puffer-forge` draft rule. Worst case
+40 s, inside the server's 45 s draft deadline. No provider at all means no
+call at all.
+
+Two transports, one call site: hosted player pods reach the model through the
+platform's **Bedrock sidecar**, granted only when the policy env carries
+`USE_BEDROCK: "true"` (they never receive `ANTHROPIC_API_KEY`); locally an
+`ANTHROPIC_API_KEY` uses the Anthropic Messages API. See
+[docs/DRAFT.md](docs/DRAFT.md).
 
 Also inherited, for reference and tests: `players/baseline_player.py` (the
 raw pretrained policy — its `MobaBrain` is the micro layer and the house

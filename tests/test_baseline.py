@@ -140,6 +140,18 @@ async def test_baseline_beats_random_full_episode(tmp_path):
     assert result.winner == 0
     if result.end_reason == "ancient":
         assert result.ancient_healths[1] == 0.0
+        # END TO END: an episode that ended by Ancient kill MUST carry the
+        # `ancient` record in the replay's event list, before the `end`
+        # record. derks-gym 0.1.0 shipped a league replay with
+        # end_reason=ancient and no such record at all.
+        from cogame_derks_gym.replay import Replay
+
+        events = Replay.parse(h.replay_path.read_bytes()).header["events"]
+        ancients = [e for e in events if e["kind"] == "ancient"]
+        assert len(ancients) == 1, [e["kind"] for e in events[-6:]]
+        assert ancients[0]["team"] == 1  # dire's Ancient fell
+        assert ancients[0]["tick"] <= result.final_tick
+        assert [e["kind"] for e in events][-2:] == ["ancient", "end"]
     else:
         assert result.ancient_healths[0] > result.ancient_healths[1]
     assert results["scores"] == [1.0] * 3 + [0.0] * 3

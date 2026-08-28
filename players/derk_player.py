@@ -17,13 +17,24 @@ champions are 6000 NOOPs. The metagame is where a prompt has real
 leverage — 4^3 = 64 loadouts per hero, counter-drafting against an unseen
 opponent, one decision that shapes the whole match.
 
+Two transports, one call site. A hosted player pod does NOT receive
+``ANTHROPIC_API_KEY``: the platform grants it a **Bedrock sidecar**
+instead, gated on ``USE_BEDROCK`` in the policy env, and hands the pod
+``AWS_ENDPOINT_URL_BEDROCK_RUNTIME`` + ``AWS_BEARER_TOKEN_BEDROCK``
+(+ ``BEDROCK_MODEL`` when pinned). Without the Bedrock path a hosted
+champion silently drafts with its scripted rule — invisible to
+``results.draft_fallbacks``, which counts server-side substitutions only
+(cogolf, 2026-08-24). ``provider_from_env`` picks the transport; both
+share the same prompt, the same tolerant parse, the same single retry at
+temperature 0 and the same deadline-derived timeout.
+
 Degrade, never hang: the LLM path has a 20 s per-call timeout, ONE retry
 at temperature 0, and then falls back to ``puffer-forge``'s draft rule.
 Each call's timeout is additionally capped by what is left of the
 SERVER's own draft deadline (the observation's ``deadline_ms``, see
 ``call_timeout``), so a short deadline — the certification fixture runs
 5 s — buys one short call instead of two the server stopped waiting for.
-No API key at all means no call is made. The decision runs off the
+No provider at all means no call is made. The decision runs off the
 websocket read loop (``players/client.py``), so a slow call cannot cost
 the seat its socket to the server's ping/pong heartbeat.
 """
@@ -45,6 +56,26 @@ from .scripted_player import ScriptedPolicy
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 MODEL = "claude-sonnet-4-5"
+
+# Bedrock (the hosted path). InvokeModel over HTTP against the sidecar
+# named by AWS_ENDPOINT_URL_BEDROCK_RUNTIME, bearer-authenticated with
+# AWS_BEARER_TOKEN_BEDROCK — the shape cogame-factorio's
+# players/llm_player.py ships, and the only way a hosted player pod can
+# reach a model.
+BEDROCK_ANTHROPIC_VERSION = "bedrock-2023-05-31"
+BEDROCK_DEFAULT_REGION = "us-west-2"
+# Inference profiles, tried in order within one attempt: model access is a
+# per-account subscription and hosted capacity is shared, so a 403/429 on
+# the first id must not idle the champion for the whole episode. Sonnet 4.5
+# is the design note's model; the Haiku fallback is the id a shipped
+# coworld (cogame-factorio) uses, and falling back to it can only LOWER
+# the per-call cost. One call per episode either way.
+BEDROCK_MODEL_CANDIDATES = (
+    "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+)
+PROVIDERS = ("anthropic", "bedrock", "none")
+
 MAX_TOKENS = 400
 CALL_TIMEOUT_SECONDS = 20.0
 # The draft observation carries the SERVER's deadline (`deadline_ms`); our
@@ -104,6 +135,64 @@ PROMPTS: dict[str, str] = {
     "derk-drafter-v1": _SYSTEM_BASE + _ANSWER_FORMAT,
     "derk-metagamer-v1": _SYSTEM_BASE + _METAGAME + _ANSWER_FORMAT,
 }
+
+def _truthy(value: object) -> bool:
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def provider_from_env(env: dict | None = None) -> str:
+    """Which LLM transport this process can use: one of PROVIDERS.
+
+    1. ``COGAME_LLM_PROVIDER`` is an explicit override (an unknown value is
+       logged and ignored rather than silently disabling the champion);
+    2. ``USE_BEDROCK`` truthy, or either sidecar variable present ->
+       ``bedrock`` (the hosted league path: the platform gates the pod's
+       Bedrock sidecar on USE_BEDROCK in the policy env);
+    3. ``ANTHROPIC_API_KEY`` present -> ``anthropic`` (local/dev);
+    4. otherwise ``none`` -> no call is made at all.
+    """
+    env = os.environ if env is None else env
+    explicit = (env.get("COGAME_LLM_PROVIDER") or "").strip().lower()
+    if explicit in PROVIDERS:
+        return explicit
+    if explicit:
+        print(f"COGAME_LLM_PROVIDER={explicit!r} is not one of "
+              f"{PROVIDERS}; detecting the provider from the environment",
+              file=sys.stderr)
+    if _truthy(env.get("USE_BEDROCK")) \
+            or (env.get("AWS_ENDPOINT_URL_BEDROCK_RUNTIME") or "").strip() \
+            or (env.get("AWS_BEARER_TOKEN_BEDROCK") or "").strip():
+        return "bedrock"
+    if (env.get("ANTHROPIC_API_KEY") or "").strip():
+        return "anthropic"
+    return "none"
+
+
+def bedrock_endpoint(env: dict | None = None) -> str:
+    """The sidecar endpoint, else the regional Bedrock runtime default."""
+    env = os.environ if env is None else env
+    region = ((env.get("AWS_REGION") or "").strip()
+              or (env.get("AWS_DEFAULT_REGION") or "").strip()
+              or BEDROCK_DEFAULT_REGION)
+    endpoint = ((env.get("AWS_ENDPOINT_URL_BEDROCK_RUNTIME") or "").strip()
+                or f"https://bedrock-runtime.{region}.amazonaws.com")
+    return endpoint.rstrip("/")
+
+
+def bedrock_models(env: dict | None = None) -> list[str]:
+    """The Bedrock model ids to try, in order: a pinned id first (the
+    platform sets ``BEDROCK_MODEL`` when the sidecar pins one), then the
+    shared candidates."""
+    env = os.environ if env is None else env
+    pinned = [(env.get("BEDROCK_MODEL") or "").strip(),
+              (env.get("COGAME_LLM_MODEL") or "").strip()]
+    return list(dict.fromkeys(
+        [model for model in pinned if model] + list(BEDROCK_MODEL_CANDIDATES)))
+
+
+def model_for_provider(provider: str, env: dict | None = None) -> str:
+    return bedrock_models(env)[0] if provider == "bedrock" else MODEL
+
 
 # -- the scripted draft rules -----------------------------------------------
 
@@ -283,15 +372,21 @@ class ScriptedDraftPolicy:
 
 
 class PromptDraftPolicy:
-    """A champion: one Anthropic call for the draft, local micro after.
+    """A champion: one model call for the draft, local micro after.
 
     The micro layer is byte-identical to the scripted baseline's
     (``MobaBrain`` on the vendored pretrained weights) — the prompt is
     the whole strategy.
+
+    ``provider`` selects the transport (see ``provider_from_env``):
+    ``bedrock`` is the hosted league path, ``anthropic`` the local one,
+    ``none`` means no call is made. Defaults to ``anthropic`` when an API
+    key was passed, so a direct construction keeps its old meaning.
     """
 
-    def __init__(self, prompt_name: str, micro, api_key: str | None,
-                 fallback=forge_picks, transport=None):
+    def __init__(self, prompt_name: str, micro, api_key: str | None = None,
+                 fallback=forge_picks, transport=None,
+                 provider: str | None = None, env: dict | None = None):
         if prompt_name not in PROMPTS:
             raise PlayerError(
                 f"unknown PLAYER_PROMPT {prompt_name!r}; legal names: "
@@ -303,6 +398,9 @@ class PromptDraftPolicy:
         self._fallback = fallback
         # Injectable for tests; None means "real HTTP".
         self._transport = transport
+        self._env = env
+        self.provider = provider or ("anthropic" if api_key else "none")
+        self.model = model_for_provider(self.provider, env)
         self.last_request: dict | None = None
 
     def _scripted_fallback(self, observation: dict, reason: str) -> dict:
@@ -315,8 +413,13 @@ class PromptDraftPolicy:
         return picks
 
     async def on_draft(self, observation: dict) -> dict:
-        if not self._api_key and self._transport is None:
-            print("ANTHROPIC_API_KEY is not set: no LLM call at all",
+        if self.provider == "none" and self._transport is None:
+            # A hosted pod gets a Bedrock sidecar, never the key: this line
+            # is the symptom to grep for when champions play scripted.
+            print("no LLM provider: ANTHROPIC_API_KEY is not set and no "
+                  "Bedrock sidecar was granted (USE_BEDROCK / "
+                  "AWS_ENDPOINT_URL_BEDROCK_RUNTIME / "
+                  "AWS_BEARER_TOKEN_BEDROCK): no LLM call at all",
                   file=sys.stderr)
             return self._scripted_fallback(observation, "no_key")
         user = _prompt_payload(observation)
@@ -363,8 +466,11 @@ class PromptDraftPolicy:
         return self._scripted_fallback(observation, reason)
 
     async def _call(self, user: str, *, reminder: bool) -> str:
+        """One request, built once, sent through whichever transport this
+        process has. The body is provider-neutral apart from the model id
+        and the version key Bedrock's InvokeModel wants."""
         body = {
-            "model": MODEL,
+            "model": self.model,
             "max_tokens": MAX_TOKENS,
             "system": self.system + (f"\n{RETRY_REMINDER}\n" if reminder
                                      else ""),
@@ -375,6 +481,8 @@ class PromptDraftPolicy:
         self.last_request = body
         if self._transport is not None:
             return await self._transport(body)
+        if self.provider == "bedrock":
+            return await _bedrock_call(body, env=self._env)
         return await _anthropic_call(body, self._api_key)
 
     def __call__(self, tick: int, obs_rows: list) -> list:
@@ -400,6 +508,49 @@ async def _anthropic_call(body: dict, api_key: str) -> str:
     return "".join(
         block.get("text", "") for block in (payload.get("content") or [])
         if isinstance(block, dict))
+
+
+async def _bedrock_call(body: dict, env: dict | None = None) -> str:
+    """One Bedrock InvokeModel call; returns the concatenated text.
+
+    The request is the Anthropic Messages body with the model id moved
+    into the URL and ``anthropic_version`` added, which is what
+    InvokeModel expects. Model ids are tried in order (see
+    BEDROCK_MODEL_CANDIDATES): a 403/404/429 on one profile falls through
+    to the next instead of idling the champion, and only if every
+    candidate fails does this raise — which the caller logs as
+    ``reason=transport``.
+    """
+    import aiohttp
+
+    env = os.environ if env is None else env
+    endpoint = bedrock_endpoint(env)
+    token = (env.get("AWS_BEARER_TOKEN_BEDROCK") or "").strip()
+    headers = {"content-type": "application/json",
+               "accept": "application/json"}
+    if token:
+        headers["authorization"] = f"Bearer {token}"
+    payload = {key: value for key, value in body.items() if key != "model"}
+    payload["anthropic_version"] = BEDROCK_ANTHROPIC_VERSION
+
+    candidates = list(dict.fromkeys(
+        [body.get("model")] + bedrock_models(env)))
+    failures: list[str] = []
+    timeout = aiohttp.ClientTimeout(total=CALL_TIMEOUT_SECONDS)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        for model in [c for c in candidates if c]:
+            async with session.post(
+                    f"{endpoint}/model/{model}/invoke",
+                    headers=headers, json=payload) as resp:
+                if resp.status != 200:
+                    detail = (await resp.text())[:200]
+                    failures.append(f"{model}: HTTP {resp.status}: {detail}")
+                    continue
+                data = await resp.json(content_type=None)
+            return "".join(
+                block.get("text", "") for block in (data.get("content") or [])
+                if isinstance(block, dict))
+    raise IOError("bedrock invoke failed: " + "; ".join(failures))
 
 
 # -- entry point ------------------------------------------------------------
@@ -443,11 +594,16 @@ def policy_from_env():
     kind, name = resolve_mode()
     seed = seed_from_env(default=1)
     if kind == "prompt":
-        print(f"policy: prompt {name} (LLM draft + puffernet micro)",
+        provider = provider_from_env()
+        model = model_for_provider(provider)
+        print(f"policy: prompt {name} (LLM draft + puffernet micro); "
+              f"provider={provider} model={model}"
+              f"{' endpoint=' + bedrock_endpoint() if provider == 'bedrock' else ''}",
               file=sys.stderr)
         return PromptDraftPolicy(
             name, _micro_for(name, seed),
-            os.environ.get("ANTHROPIC_API_KEY", "").strip() or None)
+            os.environ.get("ANTHROPIC_API_KEY", "").strip() or None,
+            provider=provider)
     print(f"policy: scripted {name}", file=sys.stderr)
     return ScriptedDraftPolicy(name, _micro_for(name, seed))
 

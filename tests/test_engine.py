@@ -856,3 +856,87 @@ def test_an_undroppable_event_is_never_dropped_even_over_the_cap():
     assert kinds[-2] == "ancient"
     assert "first_blood" in kinds
     assert kinds.count("tower") == MAX_EVENTS
+
+
+# -- the `ancient` event -----------------------------------------------------
+
+async def test_ancient_event_is_emitted_on_the_killing_tick():
+    """The design note's event vocabulary promises an `ancient` record when
+    an Ancient falls; a 0.1.0 league replay ended `end_reason=ancient` with
+    no such record, because nothing emitted it. It is derived from the sim's
+    done flag + the Ancient healths, not from the stat counters (the same
+    tick also produces an ordinary `tower` record for that kill)."""
+    from cogame_derks_gym.events import EventLog
+
+    # dire's Ancient fell, so radiant won: team is the LOSER's.
+    sim = FakeSim(done_at=4, winner_team=0,
+                  ancient_healths=(4500.0, 0.0))
+    log = EventLog()
+    log.add_draft()
+    sources = [ScriptedSource([NOOP]) for _ in range(SEATS)]
+    cfg = make_config(max_ticks=50)
+    result = await LockstepEngine(sim, cfg, sources, event_log=log).run()
+
+    assert result.end_reason == "ancient"
+    ancients = [e for e in result.events if e["kind"] == "ancient"]
+    assert len(ancients) == 1, result.events
+    assert ancients[0] == {"tick": 3, "kind": "ancient", "team": 1}
+    # ...and it lands before the `end` record the server appends
+    log.add_end(result.final_tick, result.end_reason)
+    kinds = [e["kind"] for e in log.events()]
+    assert kinds[-2:] == ["ancient", "end"]
+
+
+async def test_ancient_event_names_the_team_whose_ancient_fell():
+    from cogame_derks_gym.events import EventLog
+
+    sim = FakeSim(done_at=2, winner_team=1, ancient_healths=(0.0, 3000.0))
+    log = EventLog()
+    sources = [ScriptedSource([NOOP]) for _ in range(SEATS)]
+    result = await LockstepEngine(
+        sim, make_config(max_ticks=50), sources, event_log=log).run()
+    (ancient,) = [e for e in result.events if e["kind"] == "ancient"]
+    assert ancient["team"] == 0  # radiant's Ancient fell; dire won
+
+
+async def test_a_simultaneous_double_kill_reports_the_losing_team():
+    """Both Ancients at zero: patch 0003 awards the episode to dire, so the
+    Ancient that decided it is radiant's."""
+    from cogame_derks_gym.events import EventLog
+
+    sim = FakeSim(done_at=2, winner_team=1, ancient_healths=(0.0, 0.0))
+    log = EventLog()
+    sources = [ScriptedSource([NOOP]) for _ in range(SEATS)]
+    result = await LockstepEngine(
+        sim, make_config(max_ticks=50), sources, event_log=log).run()
+    (ancient,) = [e for e in result.events if e["kind"] == "ancient"]
+    assert ancient["team"] == 0
+
+
+async def test_no_ancient_event_on_a_tick_cap_episode():
+    from cogame_derks_gym.events import EventLog
+
+    sim = FakeSim(ancient_healths=(50.0, 200.0))
+    log = EventLog()
+    sources = [ScriptedSource([NOOP]) for _ in range(SEATS)]
+    result = await LockstepEngine(
+        sim, make_config(max_ticks=5), sources, event_log=log).run()
+    assert result.end_reason == "tick_cap"
+    assert [e for e in result.events if e["kind"] == "ancient"] == []
+
+
+async def test_ancient_event_survives_a_full_event_cap():
+    """`ancient` is undroppable: a long, kill-heavy episode must not shed
+    the record that explains how it ended."""
+    from cogame_derks_gym.events import MAX_EVENTS, EventLog
+
+    log = EventLog()
+    log.add_draft()
+    for tick in range(1, MAX_EVENTS * 2):
+        log.add(tick, "level_spike", pid=0, level=2)
+    sim = FakeSim(done_at=2, winner_team=0, ancient_healths=(4500.0, 0.0))
+    sources = [ScriptedSource([NOOP]) for _ in range(SEATS)]
+    result = await LockstepEngine(
+        sim, make_config(max_ticks=50), sources, event_log=log).run()
+    assert len(log) <= MAX_EVENTS
+    assert [e["kind"] for e in result.events].count("ancient") == 1

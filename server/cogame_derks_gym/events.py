@@ -12,11 +12,18 @@ no second source of truth.
 | kill         | any later hero kill                 | pid, victim_pid    |
 | tower        | towers_killed[pid] increased        | pid, team          |
 | level_spike  | level[pid] increased                | pid, level         |
-| ancient      | an Ancient fell                     | team               |
+| ancient      | an Ancient fell                     | team (whose fell)  |
 | end          | always, last                        | reason             |
 
 ``victim_pid`` is the pid whose ``deaths`` counter increased on the same
 tick; if several did, the lowest pid (deterministic).
+
+``ancient`` carries the team whose Ancient fell — the LOSER (the viewer
+renders it as "<team> ancient fell"). It is emitted by the engine on the
+killing tick (``LockstepEngine._observe_ancient``), not derived from the
+stat counters, because "a tower died" and "THE Ancient died" are
+different facts: the killing tick also produces an ordinary ``tower``
+record for the same kill.
 
 Cap: 400 events. On overflow the oldest ``level_spike`` is dropped first,
 then the oldest ``kill``; ``draft``, ``first_blood``, ``tower``,

@@ -638,7 +638,8 @@
       ],
       "env": {
         "PLAYER_PROMPT": "derk-drafter-v1",
-        "ANTHROPIC_API_KEY_URI": "secret://coworld/derks-gym/anthropic_api_key"
+        "ANTHROPIC_API_KEY_URI": "secret://coworld/derks-gym/anthropic_api_key",
+        "USE_BEDROCK": "true"
       },
       "source_url": "https://github.com/Metta-AI/cogame-derks-gym/tree/main/players",
       "resources": {

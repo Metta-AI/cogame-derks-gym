@@ -158,6 +158,8 @@ class LockstepEngine:
         self._start_monotonic = start_monotonic
         self._prev_stats = [dict.fromkeys(EVENT_STAT_NAMES, 0)
                             for _ in range(defaults.NUM_HEROES)]
+        # The `ancient` event is emitted at most once per episode.
+        self._ancient_emitted = False
         self._strikes = [0] * config.num_seats
         self._noop_ticks = [0] * config.num_seats
         self._noop_causes = [dict.fromkeys(NOOP_CAUSES, 0)
@@ -305,6 +307,7 @@ class LockstepEngine:
                     self._on_tick(tick, actions)
 
                 self._observe_events(tick)
+                self._observe_ancient(tick)
 
                 if fault_fn is not None:
                     # The faulting tick completed (the guard bailed out of
@@ -366,6 +369,40 @@ class LockstepEngine:
             return  # a dead instance ends the episode on the next check
         self._event_log.observe_tick(tick, stats, self._prev_stats)
         self._prev_stats = stats
+
+    def _observe_ancient(self, tick: int) -> None:
+        """Emit the `ancient` event on the tick an Ancient falls.
+
+        The sim raises its done flag INSIDE the same ``c_step`` that killed
+        the Ancient (patch 0003) and the run loop only breaks at the top of
+        the next iteration, so this runs on the killing tick — the record
+        therefore lands after that tick's `tower` record (an Ancient is a
+        tower) and before the `end` record the server appends. Emitted at
+        most once per episode; ``ancient`` is never dropped by the event
+        cap.
+
+        ``team`` is the team whose Ancient fell (i.e. the loser) — the
+        viewer renders it as "<team> ancient fell". A simultaneous
+        double-kill (both at zero) is awarded to dire by patch 0003, so the
+        Ancient that decided it is the loser's.
+        """
+        if self._event_log is None or self._ancient_emitted:
+            return
+        try:
+            if not self._sim.done():
+                return
+            healths = [float(self._sim.ancient_health(team))
+                       for team in range(defaults.NUM_TEAMS)]
+            fallen = [team for team, health in enumerate(healths)
+                      if health <= 0.0]
+            if not fallen:
+                return
+            team = fallen[0] if len(fallen) == 1 \
+                else 1 - int(self._sim.winner())
+        except Exception:
+            return  # a dead instance ends the episode on the next check
+        self._ancient_emitted = True
+        self._event_log.add(tick, "ancient", team=int(team))
 
     def _poll_dead_seat(self, seat: int, tick: int, seat_obs: np.ndarray):
         """Non-blocking revival path for a dead seat.
