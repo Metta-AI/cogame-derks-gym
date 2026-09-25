@@ -31,7 +31,11 @@ win, 0 for a loss, and 0.5 for a draw. At the configured tick cap, ancient
 health breaks the tie, as in the hosted game. The adapter does not simulate
 WebSocket deadlines, player disconnects, or LLM draft fallbacks.
 
-Metta's native Puffer recipe is `recipes.external.derks.train`. It requires a
-local checkout with both WebAssembly artifacts. The recipe fingerprints its
-Python source and both artifacts. Native Puffer training requires CUDA; the
-headless game adapter itself runs on CPU.
+The headless adapter runs on CPU. Metta's proposed native Puffer recipe was
+verified in Metta PR #24628, but that PR closed without merging. The recipe
+and policy export path therefore remain separate follow-up work.
+
+The hosted Jev policy is another ordinary player. It uses the same private
+draft observation and submits one of the 64 catalog loadouts through the
+normal draft reply. The vendored pretrained network then plays its ticks.
+The game retains draft legality, tick timing, scores, results, and replay.

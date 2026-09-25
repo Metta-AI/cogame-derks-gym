@@ -246,7 +246,6 @@ def test_players_are_one_image_env_switched():
     assert entries["lane-brawler"]["env"] == {"PLAYER_SCRIPTED": "lane-brawler"}
     assert entries["drafter"]["env"] == {
         "PLAYER_PROMPT": "derk-drafter-v1",
-        "ANTHROPIC_API_KEY_URI": "secret://coworld/derks-gym/anthropic_api_key",
         "USE_BEDROCK": "true"}
 
 
@@ -262,19 +261,14 @@ def test_every_declared_player_has_a_certification_slot():
     assert seated.count("baseline") >= len(seated) - 2
 
 
-def test_llm_runnables_ask_for_the_coworld_secret_by_uri():
-    """The namespace is game.name, not the repo slug. Kept alongside
-    USE_BEDROCK below: it costs nothing and covers a platform that ever
-    does materialise the key in a player pod."""
-    expected = f"secret://coworld/{MANIFEST['game']['name']}/anthropic_api_key"
+def test_llm_runnables_do_not_reference_a_game_secret():
     prompt_entries = [entry for entry in MANIFEST["player"]
                       if "PLAYER_PROMPT" in (entry.get("env") or {})]
     assert prompt_entries
     for entry in prompt_entries:
-        assert entry["env"].get("ANTHROPIC_API_KEY_URI") == expected, entry
+        assert "ANTHROPIC_API_KEY_URI" not in entry["env"], entry
     for row in POLICIES:
-        if "PLAYER_PROMPT" in row["env"]:
-            assert row["env"].get("ANTHROPIC_API_KEY_URI") == expected, row
+        assert "ANTHROPIC_API_KEY_URI" not in row["env"], row
 
 
 def test_every_llm_policy_gates_the_bedrock_sidecar():
@@ -294,22 +288,22 @@ def test_every_llm_policy_gates_the_bedrock_sidecar():
         env = entry.get("env") or {}
         if "PLAYER_PROMPT" in env:
             assert env.get("USE_BEDROCK") == "true", entry["id"]
-            assert provider_from_env(env) == "bedrock", entry["id"]
+            assert provider_from_env(env) == "none", entry["id"]
         else:
             assert "USE_BEDROCK" not in env, entry["id"]
     for row in POLICIES:
-        if "PLAYER_PROMPT" in row["env"]:
+        if "PLAYER_PROMPT" in row["env"] or "PLAYER_JEV" in row["env"]:
             assert row["env"].get("USE_BEDROCK") == "true", row["name"]
-            assert provider_from_env(row["env"]) == "bedrock", row["name"]
+            assert provider_from_env(row["env"]) == "none", row["name"]
         else:
             assert "USE_BEDROCK" not in row["env"], row["name"]
 
 
-def test_policies_json_has_two_prompt_champions_and_two_baselines():
+def test_policies_json_has_prompt_scripted_and_jev_players():
     from players.derk_player import PROMPTS, SCRIPTED_NAMES
 
     names = [row["name"] for row in POLICIES]
-    assert len(names) == len(set(names)) == 4
+    assert len(names) == len(set(names)) == 5
     prompts = [row for row in POLICIES if "PLAYER_PROMPT" in row["env"]]
     scripted = [row for row in POLICIES if "PLAYER_SCRIPTED" in row["env"]]
     assert len(prompts) == 2, "both champions must be PLAYER_PROMPT policies"

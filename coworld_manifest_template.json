@@ -629,7 +629,7 @@
       "id": "drafter",
       "name": "drafter",
       "type": "player",
-      "description": "derk-drafter-v1: one Anthropic call decides the loadout before tick 0, then the vendored pretrained network plays every tick. With no API key it falls back to the puffer-forge draft rule and still plays a legal, complete episode.",
+      "description": "derk-drafter-v1: one player-side Claude call decides the loadout before tick 0, then the vendored pretrained network plays every tick. Without a model endpoint it uses the puffer-forge draft rule.",
       "image": "{{PLAYER_IMAGE}}",
       "run": [
         "python",
@@ -638,7 +638,6 @@
       ],
       "env": {
         "PLAYER_PROMPT": "derk-drafter-v1",
-        "ANTHROPIC_API_KEY_URI": "secret://coworld/derks-gym/anthropic_api_key",
         "USE_BEDROCK": "true"
       },
       "source_url": "https://github.com/Metta-AI/cogame-derks-gym/tree/main/players",

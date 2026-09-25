@@ -93,12 +93,13 @@ One entrypoint, one image, env-switched:
 python -m players.derk_player
   PLAYER_PROMPT=derk-drafter-v1     LLM draft + pretrained micro   (champion)
   PLAYER_PROMPT=derk-metagamer-v1   ditto, counter-drafting prompt (champion)
+  PLAYER_JEV=true                  Jev ranks the 64 legal draft loadouts
   PLAYER_SCRIPTED=puffer-forge      fixed draft table + pretrained micro (default)
   PLAYER_SCRIPTED=lane-brawler      stat-derived draft + the FSM lane-push bot
 ```
 
-Both unset plays `puffer-forge`, so a bare `docker run` works. Both set:
-`PLAYER_PROMPT` wins and says so. An unknown name exits 2 with the legal
+All unset plays `puffer-forge`, so a bare `docker run` works. `PLAYER_JEV`
+takes priority, then `PLAYER_PROMPT`. An unknown name exits 2 with the legal
 list — a typo must fail loudly, not silently ship a different policy.
 
 The LLM path is **degrade-never-hang**: one model call per episode with a
@@ -107,10 +108,11 @@ one retry at temperature 0, then the `puffer-forge` draft rule. Worst case
 40 s, inside the server's 45 s draft deadline. No provider at all means no
 call at all.
 
-Two transports, one call site: hosted player pods reach the model through the
-platform's **Bedrock sidecar**, granted only when the policy env carries
-`USE_BEDROCK: "true"` (they never receive `ANTHROPIC_API_KEY`); locally an
-`ANTHROPIC_API_KEY` uses the Anthropic Messages API. See
+Hosted players reach Claude through the sidecar's `/v1/messages` and Jev
+through `/v1/systemone`. Release uploads grant the sidecar and pin each model;
+locally `ANTHROPIC_API_KEY` or `TYPESAFE_API_KEY` can provide a direct route.
+The `USE_BEDROCK` manifest flag enables the hosted sidecar; the runtime
+endpoint signals its presence. See
 [docs/DRAFT.md](docs/DRAFT.md).
 
 Also inherited, for reference and tests: `players/baseline_player.py` (the

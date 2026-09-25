@@ -103,7 +103,7 @@ still serves `/client/replay` for local viewing.
 
 Uploads: **publishing is `.github/workflows/coworld-release.yml`'s job,
 not CI's.** The full release — build -> certify -> upload policies ->
-upload-coworld -> secret put, in that load-bearing order — is dispatched
+upload-coworld, in that load-bearing order — is dispatched
 manually (`gh workflow run coworld-release.yml -f version=X.Y.Z`), and
 `tools/ci/policies.json` is the default policy set it uploads. League
 submission is `.github/workflows/coworld-submit.yml`.

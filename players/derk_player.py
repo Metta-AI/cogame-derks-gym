@@ -4,10 +4,12 @@ ONE entrypoint, one image, env-switched — the draft is the decision an
 LLM makes, the per-tick micro is always local:
 
     PLAYER_PROMPT=<prompt name>      LLM draft + puffernet micro  (champion)
+    PLAYER_JEV=true                  Jev draft + puffernet micro
     PLAYER_SCRIPTED=<baseline name>  scripted draft + its micro    (filler)
 
-Both unset defaults to ``PLAYER_SCRIPTED=puffer-forge``, so a bare
-``docker run`` plays. Both set: ``PLAYER_PROMPT`` wins and the choice is
+All unset defaults to ``PLAYER_SCRIPTED=puffer-forge``, so a bare
+``docker run`` plays. Jev takes priority, then ``PLAYER_PROMPT`` wins over
+``PLAYER_SCRIPTED``; that choice is
 logged. An unknown ``PLAYER_SCRIPTED`` exits 2 with the legal names — a
 typo must fail loudly, not silently ship a different policy.
 
@@ -17,14 +19,12 @@ champions are 6000 NOOPs. The metagame is where a prompt has real
 leverage — 4^3 = 64 loadouts per hero, counter-drafting against an unseen
 opponent, one decision that shapes the whole match.
 
-Two transports, one call site. A hosted player pod does NOT receive
-``ANTHROPIC_API_KEY``: the platform grants it a **Bedrock sidecar**
-instead, gated on ``USE_BEDROCK`` in the policy env, and hands the pod
-``AWS_ENDPOINT_URL_BEDROCK_RUNTIME`` + ``AWS_BEARER_TOKEN_BEDROCK``
-(+ ``BEDROCK_MODEL`` when pinned). Without the Bedrock path a hosted
-champion silently drafts with its scripted rule — invisible to
+Hosted prompt and Jev policies use the sidecar endpoint injected as
+``AWS_ENDPOINT_URL_BEDROCK_RUNTIME``. Prompt calls use ``/v1/messages``;
+Jev uses ``/v1/systemone``. Without a runtime endpoint or a direct local
+key, a policy drafts with its scripted rule — invisible to
 ``results.draft_fallbacks``, which counts server-side substitutions only
-(cogolf, 2026-08-24). ``provider_from_env`` picks the transport; both
+(cogolf, 2026-08-24). ``provider_from_env`` picks the prompt transport; both
 share the same prompt, the same tolerant parse, the same single retry at
 temperature 0 and the same deadline-derived timeout.
 
@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import sys
 import time
@@ -57,11 +58,9 @@ ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 MODEL = "claude-sonnet-4-5"
 
-# Bedrock (the hosted path). InvokeModel over HTTP against the sidecar
-# named by AWS_ENDPOINT_URL_BEDROCK_RUNTIME, bearer-authenticated with
-# AWS_BEARER_TOKEN_BEDROCK — the shape cogame-factorio's
-# players/llm_player.py ships, and the only way a hosted player pod can
-# reach a model.
+# Optional direct AWS Bedrock mode. Hosted players use /v1/messages on the
+# sidecar instead; these ids and the InvokeModel wire format are for an
+# explicitly selected direct Bedrock client.
 BEDROCK_ANTHROPIC_VERSION = "bedrock-2023-05-31"
 BEDROCK_DEFAULT_REGION = "us-west-2"
 # Inference profiles, tried in order within one attempt: model access is a
@@ -74,7 +73,7 @@ BEDROCK_MODEL_CANDIDATES = (
     "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "us.anthropic.claude-haiku-4-5-20251001-v1:0",
 )
-PROVIDERS = ("anthropic", "bedrock", "none")
+PROVIDERS = ("anthropic", "bedrock", "sidecar", "none")
 
 MAX_TOKENS = 400
 CALL_TIMEOUT_SECONDS = 20.0
@@ -145,13 +144,13 @@ def provider_from_env(env: dict | None = None) -> str:
 
     1. ``COGAME_LLM_PROVIDER`` is an explicit override (an unknown value is
        logged and ignored rather than silently disabling the champion);
-    2. ``USE_BEDROCK`` truthy, or either sidecar variable present ->
-       ``bedrock`` (the hosted league path: the platform gates the pod's
-       Bedrock sidecar on USE_BEDROCK in the policy env);
+    2. A runtime sidecar endpoint -> ``sidecar`` (the hosted league path);
     3. ``ANTHROPIC_API_KEY`` present -> ``anthropic`` (local/dev);
     4. otherwise ``none`` -> no call is made at all.
     """
     env = os.environ if env is None else env
+    if (env.get("AWS_ENDPOINT_URL_BEDROCK_RUNTIME") or "").strip():
+        return "sidecar"
     explicit = (env.get("COGAME_LLM_PROVIDER") or "").strip().lower()
     if explicit in PROVIDERS:
         return explicit
@@ -159,10 +158,6 @@ def provider_from_env(env: dict | None = None) -> str:
         print(f"COGAME_LLM_PROVIDER={explicit!r} is not one of "
               f"{PROVIDERS}; detecting the provider from the environment",
               file=sys.stderr)
-    if _truthy(env.get("USE_BEDROCK")) \
-            or (env.get("AWS_ENDPOINT_URL_BEDROCK_RUNTIME") or "").strip() \
-            or (env.get("AWS_BEARER_TOKEN_BEDROCK") or "").strip():
-        return "bedrock"
     if (env.get("ANTHROPIC_API_KEY") or "").strip():
         return "anthropic"
     return "none"
@@ -191,6 +186,9 @@ def bedrock_models(env: dict | None = None) -> list[str]:
 
 
 def model_for_provider(provider: str, env: dict | None = None) -> str:
+    if provider == "sidecar":
+        env = os.environ if env is None else env
+        return (env.get("BEDROCK_MODEL") or "").strip() or "anthropic/claude-haiku-4.5"
     return bedrock_models(env)[0] if provider == "bedrock" else MODEL
 
 
@@ -379,7 +377,8 @@ class PromptDraftPolicy:
     the whole strategy.
 
     ``provider`` selects the transport (see ``provider_from_env``):
-    ``bedrock`` is the hosted league path, ``anthropic`` the local one,
+    ``sidecar`` is the hosted league path, ``anthropic`` the local one,
+    and ``bedrock`` is an explicitly selected direct AWS route;
     ``none`` means no call is made. Defaults to ``anthropic`` when an API
     key was passed, so a direct construction keeps its old meaning.
     """
@@ -468,7 +467,7 @@ class PromptDraftPolicy:
     async def _call(self, user: str, *, reminder: bool) -> str:
         """One request, built once, sent through whichever transport this
         process has. The body is provider-neutral apart from the model id
-        and the version key Bedrock's InvokeModel wants."""
+        and the version key direct Bedrock's InvokeModel wants."""
         body = {
             "model": self.model,
             "max_tokens": MAX_TOKENS,
@@ -481,9 +480,90 @@ class PromptDraftPolicy:
         self.last_request = body
         if self._transport is not None:
             return await self._transport(body)
+        if self.provider == "sidecar":
+            return await _sidecar_call(body, env=self._env)
         if self.provider == "bedrock":
             return await _bedrock_call(body, env=self._env)
         return await _anthropic_call(body, self._api_key)
+
+    def __call__(self, tick: int, obs_rows: list) -> list:
+        return self._micro(tick, obs_rows)
+
+
+class JevDraftPolicy:
+    """Rank the 64 legal loadouts from the ordinary private draft view."""
+
+    def __init__(self, micro, transport=None, env: dict | None = None):
+        self._micro = micro
+        self._transport = transport
+        self._env = os.environ if env is None else env
+
+    async def on_draft(self, observation: dict) -> dict:
+        endpoint = self._env.get("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "").strip()
+        key = self._env.get("TYPESAFE_API_KEY", "").strip()
+        if not endpoint and not key and self._transport is None:
+            print("draft_fallback=scripted reason=no_key", file=sys.stderr)
+            return forge_picks(observation)
+        timeout = call_timeout(observation)
+        if timeout is None:
+            print("draft_fallback=scripted reason=no_time", file=sys.stderr)
+            return forge_picks(observation)
+
+        catalog = observation["catalog"]
+        candidates = {
+            str(arm + 4 * tail + 16 * misc): {
+                "arm": catalog["arm"][arm]["id"],
+                "tail": catalog["tail"][tail]["id"],
+                "misc": catalog["misc"][misc]["id"],
+            }
+            for misc in range(4) for tail in range(4) for arm in range(4)
+        }
+        body = {
+            "model": (self._env.get("BEDROCK_MODEL", "").strip()
+                      if endpoint else self._env.get("TYPESAFE_DEFAULT_MODEL", "").strip())
+                     or ("typesafe/jev-1.13" if endpoint or self._transport
+                         else "jev-latest"),
+            "state": json.dumps({
+                "observation": {k: v for k, v in observation.items()
+                                if k != "deadline_ms"},
+                "candidates": candidates,
+            }, separators=(",", ":")),
+            "questions": {"loadout": {
+                "type": "choice",
+                "instructions": "Choose the loadout most likely to win this hidden "
+                                "draft and the ensuing MOBA match for this hero.",
+                "criteria": {label: ", ".join(picks.values())
+                             for label, picks in candidates.items()},
+            }},
+        }
+        if self._transport is not None:
+            response = await asyncio.wait_for(self._transport(body), timeout)
+        else:
+            import aiohttp
+
+            headers = {"content-type": "application/json"}
+            if not endpoint:
+                endpoint = self._env.get("TYPESAFE_BASE_URL", "https://api.typesafe.ai")
+                headers["authorization"] = f"Bearer {key}"
+            async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=timeout)) as session:
+                async with session.post(endpoint.rstrip("/") + "/v1/systemone",
+                                        headers=headers, json=body) as reply:
+                    reply.raise_for_status()
+                    response = await reply.json(content_type=None)
+        answer = response["answers"]["loadout"]
+        probabilities = answer["probabilities"]
+        confidence = answer["confidence"]
+        if (answer["type"] != "choice" or set(probabilities) != set(candidates)
+                or type(confidence) not in (int, float)
+                or not math.isfinite(confidence) or not 0 <= confidence <= 1
+                or any(type(p) not in (int, float) or not math.isfinite(p)
+                       or not 0 <= p <= 1 for p in probabilities.values())
+                or abs(sum(probabilities.values()) - 1) > 0.02):
+            raise ValueError("Jev returned an invalid loadout choice")
+        chosen = max(candidates, key=probabilities.__getitem__)
+        print(f"draft=jev loadout={chosen}", file=sys.stderr)
+        return {**candidates[chosen], "note": f"Jev loadout {chosen}"}
 
     def __call__(self, tick: int, obs_rows: list) -> list:
         return self._micro(tick, obs_rows)
@@ -508,6 +588,26 @@ async def _anthropic_call(body: dict, api_key: str) -> str:
     return "".join(
         block.get("text", "") for block in (payload.get("content") or [])
         if isinstance(block, dict))
+
+
+async def _sidecar_call(body: dict, env: dict | None = None) -> str:
+    """Send the ordinary Anthropic Messages body to the hosted player sidecar."""
+    import aiohttp
+
+    env = os.environ if env is None else env
+    endpoint = env["AWS_ENDPOINT_URL_BEDROCK_RUNTIME"].rstrip("/")
+    async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=CALL_TIMEOUT_SECONDS)) as session:
+        async with session.post(
+                f"{endpoint}/v1/messages",
+                headers={"content-type": "application/json",
+                         "anthropic-version": ANTHROPIC_VERSION},
+                json=body) as reply:
+            reply.raise_for_status()
+            payload = await reply.json(content_type=None)
+    return "".join(
+        block["text"] for block in payload["content"]
+        if block["type"] == "text")
 
 
 async def _bedrock_call(body: dict, env: dict | None = None) -> str:
@@ -564,12 +664,14 @@ def _micro_for(name: str, seed: int | None):
 
 
 def resolve_mode(env: dict | None = None) -> tuple[str, str]:
-    """``("prompt"|"scripted", name)`` from the environment.
+    """``("jev"|"prompt"|"scripted", name)`` from the environment.
 
     Raises PlayerError on an unknown name — checked BEFORE anything
     expensive (a brain wasm instance) is built.
     """
     env = os.environ if env is None else env
+    if _truthy(env.get("PLAYER_JEV")):
+        return "jev", "jev"
     prompt = (env.get("PLAYER_PROMPT") or "").strip()
     scripted = (env.get("PLAYER_SCRIPTED") or "").strip()
     if prompt:
@@ -593,12 +695,15 @@ def resolve_mode(env: dict | None = None) -> tuple[str, str]:
 def policy_from_env():
     kind, name = resolve_mode()
     seed = seed_from_env(default=1)
+    if kind == "jev":
+        print("policy: Jev draft + puffernet micro", file=sys.stderr)
+        return JevDraftPolicy(_micro_for(name, seed))
     if kind == "prompt":
         provider = provider_from_env()
         model = model_for_provider(provider)
         print(f"policy: prompt {name} (LLM draft + puffernet micro); "
               f"provider={provider} model={model}"
-              f"{' endpoint=' + bedrock_endpoint() if provider == 'bedrock' else ''}",
+              f"{' endpoint=' + bedrock_endpoint() if provider in ('bedrock', 'sidecar') else ''}",
               file=sys.stderr)
         return PromptDraftPolicy(
             name, _micro_for(name, seed),

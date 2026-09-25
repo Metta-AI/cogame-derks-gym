@@ -28,8 +28,7 @@
 #                              num_agents is a hard failure
 #   SMOKE_PORT                 game port inside the network     (8080)
 #   SMOKE_TIMEOUT              seconds to wait for the episode  (900)
-#   SMOKE_REQUIRE_REPLAY_JSON  1 = replay must parse as JSON    (1)
-#                              set 0 for binary replay formats
+#   SMOKE_REQUIRE_REPLAY_JSON  1 = replay must parse as JSON    (0: DERK binary)
 #   SMOKE_EXTRA_ENV            extra "K=V K=V" for every player (empty)
 #   SMOKE_REPLAY_OUT           where to COPY the replay this smoke produced,
 #                              so it outlives the scratch dir the trap deletes
@@ -38,9 +37,8 @@
 #                              job loads it in a real browser -- that is the
 #                              only replay in CI that is known to be readable
 #                              by this game's own viewer.
-#   ANTHROPIC_API_KEY          if set, forwarded to the game so the LLM path
-#                              is exercised; if unset the game must fall back
-#                              to its scripted baselines and still complete
+#   Model credentials, if used locally, belong in player env only via
+#   SMOKE_EXTRA_ENV. The game never receives a model credential.
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -54,7 +52,7 @@ manifest="${SMOKE_MANIFEST:-${repo_dir}/coworld_manifest_template.json}"
 seats_expected="${SMOKE_SEATS:-6}"
 port="${SMOKE_PORT:-8080}"
 timeout_s="${SMOKE_TIMEOUT:-900}"
-require_replay_json="${SMOKE_REQUIRE_REPLAY_JSON:-1}"
+require_replay_json="${SMOKE_REQUIRE_REPLAY_JSON:-0}"
 replay_out="${SMOKE_REPLAY_OUT:-${repo_dir}/dist/smoke/replay.json}"
 
 run_id="$$"
@@ -190,14 +188,6 @@ chmod 777 "${work_dir}"
 # --------------------------------------------------------------------------
 docker network create "${network}" >/dev/null
 
-game_env=()
-if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-  game_env+=(-e "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}")
-  echo "ANTHROPIC_API_KEY present: the LLM path will be exercised"
-else
-  echo "no ANTHROPIC_API_KEY: the game must complete on its scripted baselines"
-fi
-
 echo "starting game container (${image} ${game_bin}) ..."
 docker run -d --name "${prefix}-game" \
   --network "${network}" --network-alias "${prefix}-game" \
@@ -207,7 +197,6 @@ docker run -d --name "${prefix}-game" \
   -e COGAME_RESULTS_URI=file:///coworld/results.json \
   -e COGAME_SAVE_REPLAY_URI=file:///coworld/replay.json \
   -e COGAME_PLAYER_FAILURE_URI=file:///coworld/player_failure.json \
-  ${game_env[@]+"${game_env[@]}"} \
   -v "${work_dir}:/coworld:rw" \
   "${image}" "${game_bin}" >/dev/null
 
@@ -424,11 +413,10 @@ for slot, pid in enumerate(seat_pids):
         assert record["picks"] == BRAWLER[role], (slot, pid, record)
         assert record["note"] == "brawl build", record
     else:
-        # a PLAYER_PROMPT seat: with no API key it uses puffer-forge's
-        # rule, with one it drafts for itself - either way the picks must
-        # be legal ids of the matching slot, which the server enforced
-        # (fallback False above).
-        assert env.get("PLAYER_PROMPT"), (slot, cert_ids[slot], env)
+        # Prompt and Jev seats return the same legal draft action as the
+        # scripted seats; the server's accepted record is authoritative.
+        assert env.get("PLAYER_PROMPT") or env.get("PLAYER_JEV"), \
+            (slot, cert_ids[slot], env)
 assert len(distinct) >= 2, (
     "every seat drafted the same loadout: the mixed certification fixture "
     "did not actually run different policies")
