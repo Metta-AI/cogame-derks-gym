@@ -29,6 +29,8 @@ sequence of 6 ints per hero. It may additionally carry
 draft turn; the returned object is sent verbatim as the draft reply, and
 None / a raised exception means "no reply" (the server then plays the
 neutral loadout for this seat).
+It may also carry ``on_draft_result(message)`` (sync or async) to observe
+the loadout the game actually accepted before the first tick.
 
 Reconnects: the server allows a dead seat to reconnect, so transient
 connection drops are retried with a bounded number of consecutive
@@ -212,8 +214,14 @@ async def _play_connection(
                     # server's draft deadline stays authoritative.
                     draft_task = asyncio.create_task(
                         _answer_draft(ws, policy, data))
+                elif phase == "draft_result":
+                    on_result = getattr(policy, "on_draft_result", None)
+                    if on_result is not None:
+                        received = on_result(data)
+                        if inspect.isawaitable(received):
+                            await received
                 # a second "draft", "draft_result" and any unrecognised
-                # phase: ignored.
+                # phase without a callback: ignored.
                 continue
             if "tick" not in data or "obs" not in data:
                 continue

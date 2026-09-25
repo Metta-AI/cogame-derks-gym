@@ -15,6 +15,28 @@ ACTION_SIZES = (64, *defaults.ACT_HIGH)
 OBSERVATION_SIZE = OBS_SIZE + 3  # phase, seat, selected loadout
 
 
+def numeric_observation(raw: bytes | np.ndarray, *, draft: bool,
+                        seat: int, loadout: int) -> np.ndarray:
+    visible = np.frombuffer(raw, dtype=np.uint8)
+    if visible.size != OBS_SIZE:
+        raise ValueError(f"expected {OBS_SIZE} observation bytes")
+    return np.concatenate((visible.astype(np.float32) / 255.0,
+                           np.array([float(draft), seat / (defaults.NUM_SEATS - 1),
+                                     loadout / 63.0], dtype=np.float32)))
+
+
+def numeric_action_mask(*, draft: bool) -> tuple[bool, ...]:
+    if draft:
+        mask = [True] * 64
+        for size, noop in zip(defaults.ACT_HIGH, defaults.NOOP_ACTION, strict=True):
+            mask.extend(index == noop for index in range(size))
+    else:
+        mask = [index == 0 for index in range(64)]
+        for size in defaults.ACT_HIGH:
+            mask.extend([True] * size)
+    return tuple(mask)
+
+
 @dataclass(frozen=True)
 class TrainingStep:
     observation: np.ndarray
@@ -56,20 +78,11 @@ class TrainingMatch:
         return self._state(0.0, False)
 
     def _state(self, reward: float, done: bool) -> TrainingStep:
-        obs = (np.zeros(OBS_SIZE, dtype=np.float32) if self.phase == "draft" else
-               self.sim.observations()[self.pid].astype(np.float32) / 255.0)
-        values = np.concatenate((obs, np.array([
-            float(self.phase == "draft"), self.seat / (defaults.NUM_SEATS - 1),
-            self.loadout / 63.0,
-        ], dtype=np.float32)))
-        if self.phase == "draft":
-            mask = [True] * 64
-            for size, noop in zip(defaults.ACT_HIGH, defaults.NOOP_ACTION, strict=True):
-                mask.extend(index == noop for index in range(size))
-        else:
-            mask = [index == 0 for index in range(64)]
-            for size in defaults.ACT_HIGH:
-                mask.extend([True] * size)
+        draft = self.phase == "draft"
+        raw = bytes(OBS_SIZE) if draft else self.sim.observations()[self.pid]
+        values = numeric_observation(raw, draft=draft,
+                                     seat=self.seat, loadout=self.loadout)
+        mask = numeric_action_mask(draft=draft)
         score = None
         if done:
             if self.sim.done():
@@ -80,7 +93,7 @@ class TrainingMatch:
                 winner = 0 if radiant > dire else 1 if dire > radiant else -1
             score = (0.5 if winner < 0 else
                      float(winner == defaults.team_for_pid(self.pid)))
-        return TrainingStep(values, tuple(mask), reward, done, score)
+        return TrainingStep(values, mask, reward, done, score)
 
     def step(self, action: list[int]) -> TrainingStep:
         if self.done:

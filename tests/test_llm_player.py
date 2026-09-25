@@ -506,19 +506,18 @@ SIDE = {"AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "http://127.0.0.1:9/bedrock",
     ({"PLAYER_PROMPT": "derk-drafter-v1"}, "none"),
     ({"ANTHROPIC_API_KEY": "sk-test"}, "anthropic"),
     ({"ANTHROPIC_API_KEY": "   "}, "none"),
-    ({"USE_BEDROCK": "true"}, "bedrock"),
-    ({"USE_BEDROCK": "True"}, "bedrock"),
-    ({"USE_BEDROCK": "1"}, "bedrock"),
-    ({"USE_BEDROCK": "yes"}, "bedrock"),
+    ({"USE_BEDROCK": "true"}, "none"),
+    ({"USE_BEDROCK": "True"}, "none"),
+    ({"USE_BEDROCK": "1"}, "none"),
+    ({"USE_BEDROCK": "yes"}, "none"),
     ({"USE_BEDROCK": "false"}, "none"),
     ({"USE_BEDROCK": ""}, "none"),
     # the sidecar variables alone are enough
-    (dict(SIDE), "bedrock"),
+    (dict(SIDE), "sidecar"),
     ({"AWS_ENDPOINT_URL_BEDROCK_RUNTIME": SIDE[
-        "AWS_ENDPOINT_URL_BEDROCK_RUNTIME"]}, "bedrock"),
-    ({"AWS_BEARER_TOKEN_BEDROCK": "t"}, "bedrock"),
-    # bedrock wins over a key that a hosted pod would not have anyway
-    ({"USE_BEDROCK": "true", "ANTHROPIC_API_KEY": "sk-test"}, "bedrock"),
+        "AWS_ENDPOINT_URL_BEDROCK_RUNTIME"]}, "sidecar"),
+    ({"AWS_BEARER_TOKEN_BEDROCK": "t"}, "none"),
+    ({"USE_BEDROCK": "true", "ANTHROPIC_API_KEY": "sk-test"}, "anthropic"),
     # the explicit override, both ways
     ({"COGAME_LLM_PROVIDER": "anthropic", "USE_BEDROCK": "true"},
      "anthropic"),
@@ -534,14 +533,17 @@ def test_provider_selection_matrix(env, expected):
     assert expected in PROVIDERS
 
 
-def test_the_release_policy_env_selects_bedrock():
-    """The exact env the release uploads for each champion."""
+def test_the_release_policy_env_keeps_credentials_out_of_the_player_manifest():
+    """Hosted model access is granted by upload flags, not baked into env."""
     policies = json.loads(
         (REPO_ROOT / "tools" / "ci" / "policies.json").read_text())
     prompts = [row for row in policies if "PLAYER_PROMPT" in row["env"]]
     assert len(prompts) == 2
     for row in prompts:
-        assert provider_from_env(row["env"]) == "bedrock", row["name"]
+        assert provider_from_env(row["env"]) == "none", row["name"]
+        assert "ANTHROPIC_API_KEY_URI" not in row["env"]
+    assert [row["name"] for row in policies if "PLAYER_JEV" in row["env"]] == \
+        ["derk-jev"]
     for row in policies:
         if "PLAYER_SCRIPTED" in row["env"]:
             # a filler makes no calls at all
@@ -551,6 +553,7 @@ def test_the_release_policy_env_selects_bedrock():
 def test_model_and_endpoint_defaults():
     assert model_for_provider("anthropic") == MODEL == "claude-sonnet-4-5"
     assert model_for_provider("bedrock", {}) == BEDROCK_MODEL_CANDIDATES[0]
+    assert model_for_provider("sidecar", {}) == "anthropic/claude-haiku-4.5"
     assert BEDROCK_MODEL_CANDIDATES[0].startswith(
         "us.anthropic.claude-sonnet-4-5")
     # a pinned id wins, and the candidates stay as fallbacks behind it
@@ -615,6 +618,10 @@ class _FakeResponse:
     async def text(self):
         return json.dumps(self._payload)
 
+    def raise_for_status(self):
+        if self.status >= 400:
+            raise IOError(f"HTTP {self.status}")
+
 
 def _bedrock_text(text):
     return 200, {"content": [{"type": "text", "text": text}]}
@@ -625,6 +632,27 @@ def bedrock_policy(fake, env=None, prompt="derk-drafter-v1", monkeypatch=None):
     monkeypatch.setattr(aiohttp, "ClientSession", fake)
     return PromptDraftPolicy(prompt, micro=lambda t, rows: [], api_key=None,
                              provider="bedrock", env=dict(SIDE, **(env or {})))
+
+
+async def test_sidecar_uses_messages_api_without_bearer(monkeypatch):
+    import aiohttp
+
+    picks = '{"arm":"arm_cleaver","tail":"tail_plate","misc":"misc_regen"}'
+    fake = FakeBedrock(_bedrock_text(picks))
+    monkeypatch.setattr(aiohttp, "ClientSession", fake)
+    p = PromptDraftPolicy("derk-drafter-v1", micro=lambda t, rows: [],
+                          provider="sidecar", env={
+                              "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "http://sidecar",
+                              "BEDROCK_MODEL": "anthropic/claude-haiku-4.5",
+                              "AWS_BEARER_TOKEN_BEDROCK": "placeholder",
+                          })
+    assert (await p.on_draft(observation()))["arm"] == "arm_cleaver"
+    request = fake.requests[0]
+    assert request["url"] == "http://sidecar/v1/messages"
+    assert request["body"]["model"] == "anthropic/claude-haiku-4.5"
+    assert "anthropic_version" not in request["body"]
+    assert "authorization" not in request["headers"]
+    assert request["headers"]["anthropic-version"] == "2023-06-01"
 
 
 async def test_bedrock_invoke_shape_and_success(monkeypatch):
