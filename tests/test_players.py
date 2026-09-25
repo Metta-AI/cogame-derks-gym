@@ -92,10 +92,14 @@ async def test_draft_answering_policy_is_recorded(tmp_path):
             super().__init__(seed)
             self.picks = picks
             self.observations = []
+            self.draft_result = None
 
         def on_draft(self, observation):
             self.observations.append(observation)
             return self.picks
+
+        def on_draft_result(self, result):
+            self.draft_result = result
 
     picks = {"arm": "arm_cleaver", "tail": "tail_rotor",
              "misc": "misc_regen", "note": "brawl"}
@@ -110,6 +114,9 @@ async def test_draft_answering_policy_is_recorded(tmp_path):
     assert written["draft_fallbacks"] == [False] * SEATS
     for policy in policies:
         assert len(policy.observations) == 1  # exactly one draft turn
+        assert policy.draft_result["phase"] == "draft_result"
+        assert policy.draft_result["loadouts"][0]["picks"] == {
+            "arm": "arm_cleaver", "tail": "tail_rotor", "misc": "misc_regen"}
     for rec in written["draft"]:
         if rec["source"] != "seat":
             continue

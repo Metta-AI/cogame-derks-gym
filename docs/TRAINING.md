@@ -35,8 +35,21 @@ Metta's native Puffer recipe is `recipes.external.derks.train`; the legacy
 Metta RL recipe is `recipes.external.derks_metta_rl.train`. Both use this
 headless adapter and fingerprint its Python source and WebAssembly artifacts.
 The adapter runs on CPU; native Puffer training requires CUDA. The recipes
-were merged through Metta #24628. A trained checkpoint still needs a player
-container that replays its actions over the normal draft and tick socket.
+were merged through Metta #24628. Metta `fabric=true` exports a frozen policy
+bundle. Build its ordinary player image from that bundle and the Metta checkout
+used for training:
+
+```sh
+docker buildx build --platform linux/amd64 --load \
+  --build-context fabric=/path/to/fabric-at-bea92fff \
+  --build-context metta=/path/to/metta \
+  --build-context bundle=/path/to/train_dir/derks_native/policy \
+  -f Dockerfile.trained -t derks-frozen:local .
+```
+
+The image runs `players.trained_player` against the same `/player` WebSocket as
+every other policy. It reads the game's accepted draft result before encoding
+tick observations, so a timed-out draft uses the actual neutral loadout.
 
 The hosted Jev policy is another ordinary player. It uses the same private
 draft observation and submits one of the 64 catalog loadouts through the

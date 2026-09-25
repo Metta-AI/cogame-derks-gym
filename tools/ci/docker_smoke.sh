@@ -88,13 +88,13 @@ test -f "${manifest}" || { echo "manifest not found: ${manifest}" >&2; exit 1; }
 # --------------------------------------------------------------------------
 # Episode config + per-seat launch args, derived from the cert fixture.
 # --------------------------------------------------------------------------
-python3 - "${manifest}" "${work_dir}" "${player_bin}" "${seats_expected}" <<'PY'
+python3 - "${manifest}" "${work_dir}" "${player_bin}" "${seats_expected}" "${image}" <<'PY'
 import json
 import os
 import shlex
 import sys
 
-manifest_path, work, player_bin, seats_expected = sys.argv[1:5]
+manifest_path, work, player_bin, seats_expected, default_image = sys.argv[1:6]
 manifest = json.load(open(manifest_path))
 game = manifest.get("game") or {}
 cert = manifest.get("certification") or {}
@@ -169,11 +169,16 @@ for slot in range(seats):
     for kv in extra_env:
         env_args += ["-e", kv]
     argv = list(entry.get("run") or [player_bin])
+    player_image = entry.get("image") or default_image
+    if player_image == "{{PLAYER_IMAGE}}":
+        player_image = default_image
     with open(os.path.join(work, f"env-{slot}.args"), "w") as fh:
         fh.write(" ".join(shlex.quote(a) for a in env_args))
     with open(os.path.join(work, f"cmd-{slot}.args"), "w") as fh:
         fh.write(" ".join(shlex.quote(a) for a in argv))
-    print(f"slot {slot}: player_id={player_id or '(default)'} run={argv} env={len(env_args) // 2}")
+    with open(os.path.join(work, f"image-{slot}"), "w") as fh:
+        fh.write(player_image)
+    print(f"slot {slot}: player_id={player_id or '(default)'} image={player_image} run={argv} env={len(env_args) // 2}")
 
 with open(os.path.join(work, "seats"), "w") as fh:
     fh.write(str(seats))
@@ -203,10 +208,11 @@ docker run -d --name "${prefix}-game" \
 for ((slot = 0; slot < seats; slot++)); do
   eval "penv=( $(cat "${work_dir}/env-${slot}.args") )"
   eval "pcmd=( $(cat "${work_dir}/cmd-${slot}.args") )"
+  player_image="$(cat "${work_dir}/image-${slot}")"
   docker run -d --name "${prefix}-p${slot}" --network "${network}" \
     -e COWORLD_PLAYER_WS_URL="ws://${prefix}-game:${port}/player?slot=${slot}&token=token-${slot}" \
     ${penv[@]+"${penv[@]}"} \
-    "${image}" ${pcmd[@]+"${pcmd[@]}"} >/dev/null
+    "${player_image}" ${pcmd[@]+"${pcmd[@]}"} >/dev/null
 done
 
 # --------------------------------------------------------------------------
@@ -412,6 +418,8 @@ for slot, pid in enumerate(seat_pids):
     elif scripted == "lane-brawler":
         assert record["picks"] == BRAWLER[role], (slot, pid, record)
         assert record["note"] == "brawl build", record
+    elif "players.trained_player" in declared[cert_ids[slot]]["run"]:
+        pass  # the checkpoint's accepted catalog pick is game-owned
     else:
         # Prompt and Jev seats return the same legal draft action as the
         # scripted seats; the server's accepted record is authoritative.
