@@ -31,9 +31,12 @@ win, 0 for a loss, and 0.5 for a draw. At the configured tick cap, ancient
 health breaks the tie, as in the hosted game. The adapter does not simulate
 WebSocket deadlines, player disconnects, or LLM draft fallbacks.
 
-The headless adapter runs on CPU. Metta's proposed native Puffer recipe was
-verified in Metta PR #24628, but that PR closed without merging. The recipe
-and policy export path therefore remain separate follow-up work.
+Metta's native Puffer recipe is `recipes.external.derks.train`; the legacy
+Metta RL recipe is `recipes.external.derks_metta_rl.train`. Both use this
+headless adapter and fingerprint its Python source and WebAssembly artifacts.
+The adapter runs on CPU; native Puffer training requires CUDA. The recipes
+were merged through Metta #24628. A trained checkpoint still needs a player
+container that replays its actions over the normal draft and tick socket.
 
 The hosted Jev policy is another ordinary player. It uses the same private
 draft observation and submits one of the 64 catalog loadouts through the
