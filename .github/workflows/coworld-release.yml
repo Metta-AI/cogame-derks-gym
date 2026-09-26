@@ -251,8 +251,6 @@ jobs:
                       cmd += ["--run", token]
                   if "PLAYER_PROMPT" in (row.get("env") or {}):
                       cmd += ["--use-bedrock", "--bedrock-model", "anthropic/claude-haiku-4.5"]
-                  elif "PLAYER_JEV" in (row.get("env") or {}):
-                      cmd += ["--use-bedrock", "--bedrock-model", "typesafe/jev-1.13"]
                   for key, value in (row.get("env") or {}).items():
                       cmd += ["--secret-env", f"{key}={value}"]
                   # The command is NOT echoed: --secret-env values are policy secrets.

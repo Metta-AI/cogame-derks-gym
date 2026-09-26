@@ -421,9 +421,9 @@ for slot, pid in enumerate(seat_pids):
     elif "players.trained_player" in declared[cert_ids[slot]]["run"]:
         pass  # the checkpoint's accepted catalog pick is game-owned
     else:
-        # Prompt and Jev seats return the same legal draft action as the
+        # Prompt seats return the same legal draft action as the
         # scripted seats; the server's accepted record is authoritative.
-        assert env.get("PLAYER_PROMPT") or env.get("PLAYER_JEV"), \
+        assert env.get("PLAYER_PROMPT"), \
             (slot, cert_ids[slot], env)
 assert len(distinct) >= 2, (
     "every seat drafted the same loadout: the mixed certification fixture "
