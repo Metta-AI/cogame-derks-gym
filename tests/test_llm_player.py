@@ -542,8 +542,6 @@ def test_the_release_policy_env_keeps_credentials_out_of_the_player_manifest():
     for row in prompts:
         assert provider_from_env(row["env"]) == "none", row["name"]
         assert "ANTHROPIC_API_KEY_URI" not in row["env"]
-    assert [row["name"] for row in policies if "PLAYER_JEV" in row["env"]] == \
-        ["derk-jev"]
     for row in policies:
         if "PLAYER_SCRIPTED" in row["env"]:
             # a filler makes no calls at all

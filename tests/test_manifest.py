@@ -292,18 +292,18 @@ def test_every_llm_policy_gates_the_bedrock_sidecar():
         else:
             assert "USE_BEDROCK" not in env, entry["id"]
     for row in POLICIES:
-        if "PLAYER_PROMPT" in row["env"] or "PLAYER_JEV" in row["env"]:
+        if "PLAYER_PROMPT" in row["env"]:
             assert row["env"].get("USE_BEDROCK") == "true", row["name"]
             assert provider_from_env(row["env"]) == "none", row["name"]
         else:
             assert "USE_BEDROCK" not in row["env"], row["name"]
 
 
-def test_policies_json_has_prompt_scripted_and_jev_players():
+def test_policies_json_has_prompt_and_scripted_players():
     from players.derk_player import PROMPTS, SCRIPTED_NAMES
 
     names = [row["name"] for row in POLICIES]
-    assert len(names) == len(set(names)) == 5
+    assert len(names) == len(set(names)) == 4
     prompts = [row for row in POLICIES if "PLAYER_PROMPT" in row["env"]]
     scripted = [row for row in POLICIES if "PLAYER_SCRIPTED" in row["env"]]
     assert len(prompts) == 2, "both champions must be PLAYER_PROMPT policies"
