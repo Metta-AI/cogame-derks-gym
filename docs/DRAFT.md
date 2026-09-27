@@ -200,11 +200,10 @@ model=… [endpoint=…]`.
 
 **Hosted model calls.** A hosted player receives the sidecar endpoint in
 `AWS_ENDPOINT_URL_BEDROCK_RUNTIME` when its policy has `--use-bedrock`.
-Claude uses `POST /v1/messages` with the pinned `BEDROCK_MODEL`; Jev uses
-`POST /v1/systemone` and ranks all 64 legal draft loadouts. Neither policy
-ships a provider key. `USE_BEDROCK` in the bundled manifest enables hosted
+Claude uses `POST /v1/messages` with the pinned `BEDROCK_MODEL` without
+shipping a provider key. `USE_BEDROCK` in the bundled manifest enables hosted
 sidecar creation; the runtime endpoint signals that it actually exists.
-Without that endpoint or a direct local key, a prompt or Jev policy drafts
+Without that endpoint or a direct local key, a prompt policy drafts
 with `puffer-forge`. The prompt path retains its tolerant parser, one retry,
 and `deadline_ms` budget. Thus:
 **count LLM usage from the player logs — `draft_fallback=scripted

@@ -50,8 +50,3 @@ docker buildx build --platform linux/amd64 --load \
 The image runs `players.trained_player` against the same `/player` WebSocket as
 every other policy. It reads the game's accepted draft result before encoding
 tick observations, so a timed-out draft uses the actual neutral loadout.
-
-The hosted Jev policy is another ordinary player. It uses the same private
-draft observation and submits one of the 64 catalog loadouts through the
-normal draft reply. The vendored pretrained network then plays its ticks.
-The game retains draft legality, tick timing, scores, results, and replay.

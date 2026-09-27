@@ -4,11 +4,10 @@ ONE entrypoint, one image, env-switched — the draft is the decision an
 LLM makes, the per-tick micro is always local:
 
     PLAYER_PROMPT=<prompt name>      LLM draft + puffernet micro  (champion)
-    PLAYER_JEV=true                  Jev draft + puffernet micro
     PLAYER_SCRIPTED=<baseline name>  scripted draft + its micro    (filler)
 
 All unset defaults to ``PLAYER_SCRIPTED=puffer-forge``, so a bare
-``docker run`` plays. Jev takes priority, then ``PLAYER_PROMPT`` wins over
+``docker run`` plays. ``PLAYER_PROMPT`` wins over
 ``PLAYER_SCRIPTED``; that choice is
 logged. An unknown ``PLAYER_SCRIPTED`` exits 2 with the legal names — a
 typo must fail loudly, not silently ship a different policy.
@@ -19,10 +18,9 @@ champions are 6000 NOOPs. The metagame is where a prompt has real
 leverage — 4^3 = 64 loadouts per hero, counter-drafting against an unseen
 opponent, one decision that shapes the whole match.
 
-Hosted prompt and Jev policies use the sidecar endpoint injected as
-``AWS_ENDPOINT_URL_BEDROCK_RUNTIME``. Prompt calls use ``/v1/messages``;
-Jev uses ``/v1/systemone``. Without a runtime endpoint or a direct local
-key, a policy drafts with its scripted rule — invisible to
+Hosted prompt policies use the sidecar endpoint injected as
+``AWS_ENDPOINT_URL_BEDROCK_RUNTIME`` and call ``/v1/messages``. Without a
+runtime endpoint or a direct local key, a policy drafts with its scripted rule — invisible to
 ``results.draft_fallbacks``, which counts server-side substitutions only
 (cogolf, 2026-08-24). ``provider_from_env`` picks the prompt transport; both
 share the same prompt, the same tolerant parse, the same single retry at
@@ -43,7 +41,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import math
 import os
 import sys
 import time
@@ -490,85 +487,6 @@ class PromptDraftPolicy:
         return self._micro(tick, obs_rows)
 
 
-class JevDraftPolicy:
-    """Rank the 64 legal loadouts from the ordinary private draft view."""
-
-    def __init__(self, micro, transport=None, env: dict | None = None):
-        self._micro = micro
-        self._transport = transport
-        self._env = os.environ if env is None else env
-
-    async def on_draft(self, observation: dict) -> dict:
-        endpoint = self._env.get("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "").strip()
-        key = self._env.get("TYPESAFE_API_KEY", "").strip()
-        if not endpoint and not key and self._transport is None:
-            print("draft_fallback=scripted reason=no_key", file=sys.stderr)
-            return forge_picks(observation)
-        timeout = call_timeout(observation)
-        if timeout is None:
-            print("draft_fallback=scripted reason=no_time", file=sys.stderr)
-            return forge_picks(observation)
-
-        catalog = observation["catalog"]
-        candidates = {
-            str(arm + 4 * tail + 16 * misc): {
-                "arm": catalog["arm"][arm]["id"],
-                "tail": catalog["tail"][tail]["id"],
-                "misc": catalog["misc"][misc]["id"],
-            }
-            for misc in range(4) for tail in range(4) for arm in range(4)
-        }
-        body = {
-            "model": (self._env.get("BEDROCK_MODEL", "").strip()
-                      if endpoint else self._env.get("TYPESAFE_DEFAULT_MODEL", "").strip())
-                     or ("typesafe/jev-1.13" if endpoint or self._transport
-                         else "jev-latest"),
-            "state": json.dumps({
-                "observation": {k: v for k, v in observation.items()
-                                if k != "deadline_ms"},
-                "candidates": candidates,
-            }, separators=(",", ":")),
-            "questions": {"loadout": {
-                "type": "choice",
-                "instructions": "Choose the loadout most likely to win this hidden "
-                                "draft and the ensuing MOBA match for this hero.",
-                "criteria": {label: ", ".join(picks.values())
-                             for label, picks in candidates.items()},
-            }},
-        }
-        if self._transport is not None:
-            response = await asyncio.wait_for(self._transport(body), timeout)
-        else:
-            import aiohttp
-
-            headers = {"content-type": "application/json"}
-            if not endpoint:
-                endpoint = self._env.get("TYPESAFE_BASE_URL", "https://api.typesafe.ai")
-                headers["authorization"] = f"Bearer {key}"
-            async with aiohttp.ClientSession(
-                    timeout=aiohttp.ClientTimeout(total=timeout)) as session:
-                async with session.post(endpoint.rstrip("/") + "/v1/systemone",
-                                        headers=headers, json=body) as reply:
-                    reply.raise_for_status()
-                    response = await reply.json(content_type=None)
-        answer = response["answers"]["loadout"]
-        probabilities = answer["probabilities"]
-        confidence = answer["confidence"]
-        if (answer["type"] != "choice" or set(probabilities) != set(candidates)
-                or type(confidence) not in (int, float)
-                or not math.isfinite(confidence) or not 0 <= confidence <= 1
-                or any(type(p) not in (int, float) or not math.isfinite(p)
-                       or not 0 <= p <= 1 for p in probabilities.values())
-                or abs(sum(probabilities.values()) - 1) > 0.02):
-            raise ValueError("Jev returned an invalid loadout choice")
-        chosen = max(candidates, key=probabilities.__getitem__)
-        print(f"draft=jev loadout={chosen}", file=sys.stderr)
-        return {**candidates[chosen], "note": f"Jev loadout {chosen}"}
-
-    def __call__(self, tick: int, obs_rows: list) -> list:
-        return self._micro(tick, obs_rows)
-
-
 async def _anthropic_call(body: dict, api_key: str) -> str:
     """One Anthropic Messages call; returns the concatenated text."""
     import aiohttp
@@ -664,14 +582,12 @@ def _micro_for(name: str, seed: int | None):
 
 
 def resolve_mode(env: dict | None = None) -> tuple[str, str]:
-    """``("jev"|"prompt"|"scripted", name)`` from the environment.
+    """``("prompt"|"scripted", name)`` from the environment.
 
     Raises PlayerError on an unknown name — checked BEFORE anything
     expensive (a brain wasm instance) is built.
     """
     env = os.environ if env is None else env
-    if _truthy(env.get("PLAYER_JEV")):
-        return "jev", "jev"
     prompt = (env.get("PLAYER_PROMPT") or "").strip()
     scripted = (env.get("PLAYER_SCRIPTED") or "").strip()
     if prompt:
@@ -695,9 +611,6 @@ def resolve_mode(env: dict | None = None) -> tuple[str, str]:
 def policy_from_env():
     kind, name = resolve_mode()
     seed = seed_from_env(default=1)
-    if kind == "jev":
-        print("policy: Jev draft + puffernet micro", file=sys.stderr)
-        return JevDraftPolicy(_micro_for(name, seed))
     if kind == "prompt":
         provider = provider_from_env()
         model = model_for_provider(provider)
