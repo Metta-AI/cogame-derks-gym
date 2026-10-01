@@ -492,12 +492,12 @@ def test_scripted_policy_rejects_an_unknown_name():
 # -- provider selection ------------------------------------------------------
 #
 # A hosted player pod never receives ANTHROPIC_API_KEY: the platform grants
-# it a Bedrock sidecar and gates that on USE_BEDROCK in the policy env
-# (cogolf, 2026-08-24). Getting this matrix wrong is invisible in
+# it a native sidecar when uploaded with --use-llm. A local provider flag
+# does not attach a hosted sidecar. Getting this matrix wrong is invisible in
 # results.draft_fallbacks and costs a whole league round of champion play,
 # so every row is pinned.
 
-SIDE = {"AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "http://127.0.0.1:9/bedrock",
+SIDE = {"COWORLD_LLM_ENDPOINT": "http://127.0.0.1:9/bedrock",
         "AWS_BEARER_TOKEN_BEDROCK": "sidecar-token"}
 
 
@@ -514,8 +514,8 @@ SIDE = {"AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "http://127.0.0.1:9/bedrock",
     ({"USE_BEDROCK": ""}, "none"),
     # the sidecar variables alone are enough
     (dict(SIDE), "sidecar"),
-    ({"AWS_ENDPOINT_URL_BEDROCK_RUNTIME": SIDE[
-        "AWS_ENDPOINT_URL_BEDROCK_RUNTIME"]}, "sidecar"),
+    ({"COWORLD_LLM_ENDPOINT": SIDE[
+        "COWORLD_LLM_ENDPOINT"]}, "sidecar"),
     ({"AWS_BEARER_TOKEN_BEDROCK": "t"}, "none"),
     ({"USE_BEDROCK": "true", "ANTHROPIC_API_KEY": "sk-test"}, "anthropic"),
     # the explicit override, both ways
@@ -563,14 +563,14 @@ def test_model_and_endpoint_defaults():
                                    BEDROCK_MODEL_CANDIDATES[0]}))) == \
         len(BEDROCK_MODEL_CANDIDATES)
     # the sidecar endpoint wins over the regional default
-    assert bedrock_endpoint(SIDE) == "http://127.0.0.1:9/bedrock"
+    assert bedrock_endpoint({"AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "http://local/"}) == "http://local"
     assert bedrock_endpoint({}) == \
         f"https://bedrock-runtime.{BEDROCK_DEFAULT_REGION}.amazonaws.com"
     assert bedrock_endpoint({"AWS_REGION": "eu-west-1"}) == \
         "https://bedrock-runtime.eu-west-1.amazonaws.com"
     # a trailing slash never doubles up in the request URL
     assert bedrock_endpoint(
-        {"AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "http://side/"}) == "http://side"
+        {"AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "http://local/"}) == "http://local"
 
 
 # -- the Bedrock transport (stubbed at the HTTP boundary) --------------------
@@ -629,7 +629,7 @@ def bedrock_policy(fake, env=None, prompt="derk-drafter-v1", monkeypatch=None):
     import aiohttp
     monkeypatch.setattr(aiohttp, "ClientSession", fake)
     return PromptDraftPolicy(prompt, micro=lambda t, rows: [], api_key=None,
-                             provider="bedrock", env=dict(SIDE, **(env or {})))
+                             provider="bedrock", env=dict({"AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "http://127.0.0.1:9/bedrock", "AWS_BEARER_TOKEN_BEDROCK": "local-token"}, **(env or {})))
 
 
 async def test_sidecar_uses_messages_api_without_bearer(monkeypatch):
@@ -640,14 +640,14 @@ async def test_sidecar_uses_messages_api_without_bearer(monkeypatch):
     monkeypatch.setattr(aiohttp, "ClientSession", fake)
     p = PromptDraftPolicy("derk-drafter-v1", micro=lambda t, rows: [],
                           provider="sidecar", env={
-                              "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "http://sidecar",
-                              "BEDROCK_MODEL": "anthropic/claude-haiku-4.5",
+                              "COWORLD_LLM_ENDPOINT": "http://sidecar",
+                              "COWORLD_LLM_MODEL": "anthropic/claude-sonnet-4.6",
                               "AWS_BEARER_TOKEN_BEDROCK": "placeholder",
                           })
     assert (await p.on_draft(observation()))["arm"] == "arm_cleaver"
     request = fake.requests[0]
     assert request["url"] == "http://sidecar/v1/messages"
-    assert request["body"]["model"] == "anthropic/claude-haiku-4.5"
+    assert request["body"]["model"] == "anthropic/claude-sonnet-4.6"
     assert "anthropic_version" not in request["body"]
     assert "authorization" not in request["headers"]
     assert request["headers"]["anthropic-version"] == "2023-06-01"
@@ -666,7 +666,7 @@ async def test_bedrock_invoke_shape_and_success(monkeypatch):
     assert request["url"] == (
         f"http://127.0.0.1:9/bedrock/model/{BEDROCK_MODEL_CANDIDATES[0]}"
         f"/invoke")
-    assert request["headers"]["authorization"] == "Bearer sidecar-token"
+    assert request["headers"]["authorization"] == "Bearer local-token"
     assert request["headers"]["content-type"] == "application/json"
     body = request["body"]
     # InvokeModel wants the version key and NO model in the body

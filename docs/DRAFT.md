@@ -199,7 +199,7 @@ it used is logged once at startup: `policy: prompt <name> … provider=<sidecar\
 model=… [endpoint=…]`.
 
 **Hosted model calls.** A hosted player receives the sidecar endpoint in
-`AWS_ENDPOINT_URL_BEDROCK_RUNTIME` when its policy has `--use-bedrock`.
+`COWORLD_LLM_ENDPOINT` when its policy has `--use-bedrock`.
 Claude uses `POST /v1/messages` with the pinned `BEDROCK_MODEL` without
 shipping a provider key. `USE_BEDROCK` in the bundled manifest enables hosted
 sidecar creation; the runtime endpoint signals that it actually exists.
