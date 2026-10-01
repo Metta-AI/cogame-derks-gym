@@ -245,8 +245,7 @@ def test_players_are_one_image_env_switched():
     assert entries["baseline"]["env"] == {"PLAYER_SCRIPTED": "puffer-forge"}
     assert entries["lane-brawler"]["env"] == {"PLAYER_SCRIPTED": "lane-brawler"}
     assert entries["drafter"]["env"] == {
-        "PLAYER_PROMPT": "derk-drafter-v1",
-        "USE_BEDROCK": "true"}
+        "PLAYER_PROMPT": "derk-drafter-v1"}
 
 
 def test_every_declared_player_has_a_certification_slot():
@@ -271,32 +270,17 @@ def test_llm_runnables_do_not_reference_a_game_secret():
         assert "ANTHROPIC_API_KEY_URI" not in row["env"], row
 
 
-def test_every_llm_policy_gates_the_bedrock_sidecar():
-    """A hosted player pod never receives ANTHROPIC_API_KEY: the platform
-    grants it a Bedrock sidecar, and it gates that on USE_BEDROCK in the
-    policy env (`resolve_player_bedrock`). Without this the champions
-    silently draft with their scripted rule — invisible to
-    results.draft_fallbacks, which counts server-side substitutions only
-    (cogolf, 2026-08-24; observed on derks-gym 0.1.0's league rounds).
-
-    Every PLAYER_PROMPT entry, in the manifest AND in the release's policy
-    set, must carry it; a PLAYER_SCRIPTED entry must not (it makes no
-    calls, and a needless sidecar is a needless cost)."""
+def test_prompt_policies_use_native_upload_flags():
     from players.derk_player import provider_from_env
 
-    for entry in MANIFEST["player"]:
+    for entry in [*MANIFEST["player"], *POLICIES]:
         env = entry.get("env") or {}
+        assert "USE_BEDROCK" not in env
         if "PLAYER_PROMPT" in env:
-            assert env.get("USE_BEDROCK") == "true", entry["id"]
-            assert provider_from_env(env) == "none", entry["id"]
-        else:
-            assert "USE_BEDROCK" not in env, entry["id"]
-    for row in POLICIES:
-        if "PLAYER_PROMPT" in row["env"]:
-            assert row["env"].get("USE_BEDROCK") == "true", row["name"]
-            assert provider_from_env(row["env"]) == "none", row["name"]
-        else:
-            assert "USE_BEDROCK" not in row["env"], row["name"]
+            assert provider_from_env({**env, "COWORLD_LLM_ENDPOINT": "http://sidecar"}) == "sidecar"
+    release = (REPO_ROOT / ".github/workflows/coworld-release.yml").read_text()
+    assert "--use-llm" in release
+    assert "--llm-model" in release
 
 
 def test_policies_json_has_prompt_and_scripted_players():

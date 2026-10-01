@@ -3,17 +3,13 @@
     "name": "derk-drafter-v1",
     "run": "/bin/derks-gym-player",
     "env": {
-      "PLAYER_PROMPT": "derk-drafter-v1",
-      "USE_BEDROCK": "true"
-    }
+      "PLAYER_PROMPT": "derk-drafter-v1"}
   },
   {
     "name": "derk-metagamer-v1",
     "run": "/bin/derks-gym-player",
     "env": {
-      "PLAYER_PROMPT": "derk-metagamer-v1",
-      "USE_BEDROCK": "true"
-    },
+      "PLAYER_PROMPT": "derk-metagamer-v1"},
     "player": "ply_bac48eb1-662e-44f8-973d-f3e016dccf5d"
   },
   {

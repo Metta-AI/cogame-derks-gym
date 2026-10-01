@@ -19,7 +19,7 @@ leverage — 4^3 = 64 loadouts per hero, counter-drafting against an unseen
 opponent, one decision that shapes the whole match.
 
 Hosted prompt policies use the sidecar endpoint injected as
-``AWS_ENDPOINT_URL_BEDROCK_RUNTIME`` and call ``/v1/messages``. Without a
+``COWORLD_LLM_ENDPOINT`` and call ``/v1/messages``. Without a
 runtime endpoint or a direct local key, a policy drafts with its scripted rule — invisible to
 ``results.draft_fallbacks``, which counts server-side substitutions only
 (cogolf, 2026-08-24). ``provider_from_env`` picks the prompt transport; both
@@ -146,7 +146,7 @@ def provider_from_env(env: dict | None = None) -> str:
     4. otherwise ``none`` -> no call is made at all.
     """
     env = os.environ if env is None else env
-    if (env.get("AWS_ENDPOINT_URL_BEDROCK_RUNTIME") or "").strip():
+    if (env.get("COWORLD_LLM_ENDPOINT") or "").strip():
         return "sidecar"
     explicit = (env.get("COGAME_LLM_PROVIDER") or "").strip().lower()
     if explicit in PROVIDERS:
@@ -185,7 +185,7 @@ def bedrock_models(env: dict | None = None) -> list[str]:
 def model_for_provider(provider: str, env: dict | None = None) -> str:
     if provider == "sidecar":
         env = os.environ if env is None else env
-        return (env.get("BEDROCK_MODEL") or "").strip() or "anthropic/claude-haiku-4.5"
+        return (env.get("COWORLD_LLM_MODEL") or "").strip() or "anthropic/claude-haiku-4.5"
     return bedrock_models(env)[0] if provider == "bedrock" else MODEL
 
 
@@ -413,8 +413,7 @@ class PromptDraftPolicy:
             # A hosted pod gets a Bedrock sidecar, never the key: this line
             # is the symptom to grep for when champions play scripted.
             print("no LLM provider: ANTHROPIC_API_KEY is not set and no "
-                  "Bedrock sidecar was granted (USE_BEDROCK / "
-                  "AWS_ENDPOINT_URL_BEDROCK_RUNTIME / "
+                  "native sidecar was granted (COWORLD_LLM_ENDPOINT / "
                   "AWS_BEARER_TOKEN_BEDROCK): no LLM call at all",
                   file=sys.stderr)
             return self._scripted_fallback(observation, "no_key")
@@ -513,7 +512,7 @@ async def _sidecar_call(body: dict, env: dict | None = None) -> str:
     import aiohttp
 
     env = os.environ if env is None else env
-    endpoint = env["AWS_ENDPOINT_URL_BEDROCK_RUNTIME"].rstrip("/")
+    endpoint = env["COWORLD_LLM_ENDPOINT"].rstrip("/")
     async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=CALL_TIMEOUT_SECONDS)) as session:
         async with session.post(
