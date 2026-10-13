@@ -9,11 +9,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      network: host
   player:
     image: cogame-derks-gym-player:latest
     platform: linux/amd64
     build:
       context: .
       dockerfile: Dockerfile
-      network: host
